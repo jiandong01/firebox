@@ -1,18 +1,27 @@
+# firebox/sandbox/__init__.py
+
 from .main import Sandbox
+from .process import ProcessManager, Process, ProcessMessage, ProcessOutput
+from .exception import (
+    SandboxException,
+    ProcessException,
+    CurrentWorkingDirectoryDoesntExistException,
+    TimeoutException,
+)
 from .sandbox_connection import SandboxConnection
-from .filesystem import FilesystemManager
-from .process import ProcessManager, Process
-from .terminal import TerminalManager, Terminal
-from .exception import SandboxException, TimeoutException
+from .out import OutStdoutResponse, OutStderrResponse
 
 __all__ = [
     "Sandbox",
-    "SandboxConnection",
-    "FilesystemManager",
     "ProcessManager",
     "Process",
-    "TerminalManager",
-    "Terminal",
+    "ProcessMessage",
+    "ProcessOutput",
     "SandboxException",
+    "ProcessException",
+    "CurrentWorkingDirectoryDoesntExistException",
     "TimeoutException",
+    "SandboxConnection",
+    "OutStdoutResponse",
+    "OutStderrResponse",
 ]

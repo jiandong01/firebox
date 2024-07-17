@@ -1,3 +1,5 @@
+# firebox/sandbox/process.py
+
 from __future__ import annotations
 
 import logging
@@ -260,15 +262,13 @@ class ProcessManager:
             if not future_exit.done():
                 future_exit.set_result(True)
 
-        def handle_stdout(data: Dict[Any, Any]):
+        def handle_stdout(data: Dict[str, Any]):
             out = OutStdoutResponse(**data)
-
             message = ProcessMessage(
                 line=out.line,
                 timestamp=out.timestamp,
                 error=False,
             )
-
             output._add_stdout(message)
             if on_stdout:
                 try:
@@ -276,21 +276,19 @@ class ProcessManager:
                 except TypeError as error:
                     logger.exception(f"Error in on_stdout callback: {error}")
 
-        def handle_stderr(data: Dict[Any, Any]):
+        def handle_stderr(data: Dict[str, Any]):
             out = OutStderrResponse(**data)
-
             message = ProcessMessage(
                 line=out.line,
                 timestamp=out.timestamp,
                 error=True,
             )
-
             output._add_stderr(message)
             if on_stderr:
                 try:
                     on_stderr(message)
                 except TypeError as error:
-                    logger.exception(f"Error in on_stdout callback: {error}")
+                    logger.exception(f"Error in on_stderr callback: {error}")
 
         try:
             subscription_args = [

@@ -10,7 +10,7 @@ from typing import Any, Callable, List, Literal, Optional, Union, Dict
 from datetime import datetime
 from pydantic import BaseModel
 
-from firebox.api import E2BApiClient, exceptions, models, client
+from firebox.api import SandboxesApi, Sandbox, NewSandbox, RunningSandboxes
 from firebox.constants import (
     DOMAIN,
     SANDBOX_REFRESH_PERIOD,
@@ -47,16 +47,6 @@ class SubscriptionArgs(BaseModel):
     params: List[Any] = []
 
 
-class RunningSandbox(BaseModel):
-    sandbox_id: str
-    template_id: str
-    alias: Optional[str]
-    metadata: Optional[Dict[str, str]]
-    cpu_count: int
-    memory_mb: int
-    started_at: datetime
-
-
 class SandboxConnection:
     _refresh_retries = 4
     _on_close_child: Optional[Callable[[], Any]] = None
@@ -70,7 +60,7 @@ class SandboxConnection:
         """
         if not self._sandbox:
             raise SandboxException("Sandbox is not running.")
-        return f"{self._sandbox.sandbox_id}-{self._sandbox.client_id}"
+        return self._sandbox.sandbox_id
 
     @property
     def finished(self):
@@ -95,34 +85,21 @@ class SandboxConnection:
         metadata: Optional[Dict[str, str]] = None,
         timeout: Optional[float] = TIMEOUT,
         domain: Optional[str] = None,
-        _sandbox: Optional[models.Sandbox] = None,
+        _sandbox: Optional[Sandbox] = None,
         _debug_hostname: Optional[str] = None,
         _debug_port: Optional[int] = None,
         _debug_dev_env: Optional[Literal["remote", "local"]] = None,
     ):
-        api_key = get_api_key(api_key)
-
         self.cwd = cwd
-        """
-        Default working directory used in the sandbox.
-
-        You can change the working directory by setting the `cwd` property.
-        """
         self.env_vars = env_vars or {}
-        """
-        Default environment variables used in the sandbox.
-
-        You can change the environment variables by setting the `env_vars` property.
-        """
         self._template = template
-        self._api_key = api_key
         self._debug_hostname = _debug_hostname
         self._debug_port = _debug_port
         self._debug_dev_env = _debug_dev_env
         self._sandbox = _sandbox
         self.domain = domain or DOMAIN
 
-        self._api_client = E2BApiClient(api_key=self._api_key, domain=self.domain)
+        self._api = SandboxesApi()
         self._is_open = False
         self._process_cleanup: List[Callable[[], Any]] = []
         self._subscribers = {}
@@ -178,22 +155,13 @@ class SandboxConnection:
         if not 0 <= duration <= 3600:
             raise ValueError("Duration must be between 0 and 3600 seconds")
 
-        api = client.SandboxesApi(self._api_client)
         try:
-            api.sandboxes_sandbox_id_refreshes_post(
-                self._sandbox.sandbox_id,
-                client.SandboxesSandboxIDRefreshesPostRequest(duration=duration),
-            )
+            self._api.sandboxes_sandbox_id_refreshes_post(self.id, duration)
             logger.debug(
                 f"Sandbox will be kept alive without connection for next {duration} seconds."
             )
-        except exceptions.ApiException as e:
-            if e.status == 404:
-                raise SandboxException(
-                    f"Sandbox {self.id} failed because it cannot be found"
-                ) from e
-            else:
-                raise e
+        except Exception as e:
+            raise SandboxException(f"Failed to keep sandbox alive: {str(e)}") from e
 
     def close(self) -> None:
         """
@@ -233,27 +201,20 @@ class SandboxConnection:
 
         if not self._sandbox and not self._debug_hostname:
             try:
-                api = client.SandboxesApi(self._api_client)
-
-                self._sandbox = api.sandboxes_post(
-                    models.NewSandbox(templateID=self._template, metadata=metadata),
-                    _request_timeout=timeout,
+                new_sandbox = NewSandbox(
+                    template_id=self._template,
+                    metadata=metadata,
+                    cpu_count=1,
+                    memory_mb=512,
                 )
+                self._sandbox = self._api.sandboxes_post(new_sandbox)
                 logger.info(
                     f"Sandbox {self._sandbox.template_id} created (id:{self.id})"
                 )
-            except exceptions.ApiException as e:
-                logger.error(f"Failed to acquire sandbox")
-                self._close()
-                if e.status == 408:  # Timeout
-                    raise TimeoutException(
-                        f"Failed to acquire sandbox: {e}",
-                    ) from e
-                raise e
             except Exception as e:
                 logger.error(f"Failed to acquire sandbox")
                 self._close()
-                raise e
+                raise TimeoutException(f"Failed to acquire sandbox: {str(e)}") from e
 
         if not self._debug_hostname:
             self._start_refreshing()
@@ -348,7 +309,7 @@ class SandboxConnection:
             error_message = "\n"
 
             for i, s in enumerate(process_exceptions):
-                tb = s.__traceback__  # Get the traceback object
+                tb = s.__traceback__
                 stack_trace = "\n".join(traceback.extract_tb(tb).format())
                 error_message += f'\n[{i}]: {type(s).__name__}("{s}"):\n{stack_trace}\n'
 
@@ -407,34 +368,25 @@ class SandboxConnection:
             )
 
             current_retry = 0
-            api = client.SandboxesApi(self._api_client)
             while True:
                 if not self._is_open:
                     logger.debug(f"Cannot refresh sandbox - it was closed. {self.id}")
                     return
                 sleep(SANDBOX_REFRESH_PERIOD)
                 try:
-                    api.sandboxes_sandbox_id_refreshes_post(
-                        self._sandbox.sandbox_id,
-                        client.SandboxesSandboxIDRefreshesPostRequest(duration=0),
-                    )
+                    self._api.sandboxes_sandbox_id_refreshes_post(self.id, 0)
                     logger.debug(f"Refreshed sandbox {self.id}")
-                except exceptions.ApiException as e:
-                    if e.status == 404:
-                        raise SandboxException(
-                            f"Sandbox {self.id} failed because it cannot be found"
-                        ) from e
+                except Exception as e:
+                    if current_retry < self._refresh_retries:
+                        logger.error(
+                            f"Refreshing sandbox {self.id} failed. Retrying..."
+                        )
+                        current_retry += 1
                     else:
-                        if current_retry < self._refresh_retries:
-                            logger.error(
-                                f"Refreshing sandbox {self.id} failed. Retrying..."
-                            )
-                            current_retry += 1
-                        else:
-                            logger.error(
-                                f"Refreshing sandbox {self.id} failed. Max retries exceeded"
-                            )
-                            raise e
+                        logger.error(
+                            f"Refreshing sandbox {self.id} failed. Max retries exceeded"
+                        )
+                        raise e
         finally:
             if self._sandbox:
                 logger.info(f"Stopped refreshing sandbox (id: {self.id})")
@@ -446,7 +398,7 @@ class SandboxConnection:
     @staticmethod
     def list(
         api_key: Optional[str] = None, domain: str = DOMAIN
-    ) -> List[RunningSandbox]:
+    ) -> List[RunningSandboxes]:
         """
         List all running sandboxes.
 
@@ -454,16 +406,8 @@ class SandboxConnection:
         :param domain: Domain to use for the API.
         If not provided, the `FIREBOX_API_KEY` environment variable will be used.
         """
-        api_key = get_api_key(api_key)
-
-        with E2BApiClient(api_key=api_key, domain=domain) as api_client:
-            return [
-                RunningSandbox(
-                    sandbox_id=f"{sandbox.sandbox_id}-{sandbox.client_id}",
-                    **sandbox.dict(exclude={"sandbox_id", "client_id"}),
-                )
-                for sandbox in client.SandboxesApi(api_client).sandboxes_get()
-            ]
+        api = SandboxesApi()
+        return api.sandboxes_get()
 
     @staticmethod
     def kill(
@@ -477,10 +421,5 @@ class SandboxConnection:
         :param domain: Domain to use for the API.
         If not provided, the `FIREBOX_API_KEY` environment variable will be used.
         """
-        api_key = get_api_key(api_key)
-
-        short_id = sandbox_id.split("-")[0]
-        with E2BApiClient(api_key=api_key, domain=domain) as api_client:
-            return client.SandboxesApi(api_client).sandboxes_sandbox_id_delete(
-                sandbox_id=short_id
-            )
+        api = SandboxesApi()
+        api.sandboxes_sandbox_id_delete(sandbox_id)
