@@ -1,3 +1,5 @@
+# firebox/api/aync_docker_adapter.py
+
 import asyncio
 import aiodocker
 import tarfile
@@ -18,58 +20,100 @@ from firebox.exceptions import (
 from firebox.config import config
 from firebox.logging import logger
 from firebox.cleanup import cleanup_manager
-from .docker_builder import DockerImageBuilder
 
 
 class AsyncDockerAdapter:
     def __init__(self):
-        self.client = aiodocker.Docker(url=config.docker_host)
-        self.image_builder = DockerImageBuilder(self.client)
+        self.client = None
         cleanup_manager.add_task(self.close)
+
+    async def _get_client(self):
+        if self.client is None:
+            # self.client = aiodocker.Docker(url=config.docker_host)
+            self.client = aiodocker.Docker()
+        return self.client
 
     async def build_image(
         self, dockerfile: str, tag: str, build_args: Optional[Dict[str, str]] = None
     ) -> str:
-        return await self.image_builder.build_image(dockerfile, tag, build_args)
+        try:
+            client = await self._get_client()
+
+            # Create a tar archive containing the Dockerfile
+            dockerfile_obj = io.BytesIO(dockerfile.encode("utf-8"))
+            tar_obj = io.BytesIO()
+            with tarfile.open(fileobj=tar_obj, mode="w") as tar:
+                tarinfo = tarfile.TarInfo(name="Dockerfile")
+                tarinfo.size = len(dockerfile_obj.getvalue())
+                tar.addfile(tarinfo, dockerfile_obj)
+            tar_obj.seek(0)
+
+            build_generator = client.images.build(
+                fileobj=tar_obj,
+                encoding="utf-8",
+                tag=tag,
+                buildargs=build_args,
+                stream=True,
+            )
+
+            image_id = None
+            async for chunk in build_generator:
+                if isinstance(chunk, dict):
+                    if "stream" in chunk:
+                        print(chunk["stream"].strip())
+                    if "aux" in chunk and "ID" in chunk["aux"]:
+                        image_id = chunk["aux"]["ID"]
+                elif isinstance(chunk, str):
+                    print(chunk.strip())
+
+            if not image_id:
+                raise SandboxCreationError("Failed to build Docker image")
+
+            return image_id
+
+        except aiodocker.exceptions.DockerError as e:
+            raise SandboxCreationError(f"Failed to build Docker image: {str(e)}")
 
     async def create_sandbox(self, new_sandbox: NewSandbox) -> Sandbox:
         logger.info(f"Creating sandbox with template: {new_sandbox.template_id}")
 
-        # If a Dockerfile is provided, build the image first
-        if new_sandbox.dockerfile:
-            image_tag = f"firebox-custom-{new_sandbox.template_id}"
-            await self.build_image(
-                new_sandbox.dockerfile, image_tag, new_sandbox.build_args
-            )
-            new_sandbox.template_id = image_tag
-
-        container_config = {
-            "Image": new_sandbox.template_id,
-            "Env": [f"{k}={v}" for k, v in (new_sandbox.metadata or {}).items()],
-            "HostConfig": {
-                "CpuCount": new_sandbox.cpu_count,
-                "Memory": (
-                    new_sandbox.memory_mb * 1024 * 1024
-                    if new_sandbox.memory_mb
-                    else None
-                ),
-                "Binds": [
-                    f"{host}:{container}"
-                    for host, container in (new_sandbox.volumes or {}).items()
-                ],
-                "PortBindings": {
-                    f"{container}/tcp": [{"HostPort": str(host)}]
-                    for container, host in (new_sandbox.ports or {}).items()
-                },
-                "SecurityOpt": ["no-new-privileges:true"],
-                "CapDrop": ["ALL"],
-                "CapAdd": new_sandbox.capabilities or [],
-            },
-        }
-
         try:
-            container = await self.client.containers.create(config=container_config)
+            client = await self._get_client()
+
+            # If a Dockerfile is provided, build the image first
+            if new_sandbox.dockerfile:
+                image_tag = f"firebox-custom-{new_sandbox.template_id}"
+                new_sandbox.template_id = await self.build_image(
+                    new_sandbox.dockerfile, image_tag, new_sandbox.build_args
+                )
+
+            container_config = {
+                "Image": new_sandbox.template_id,
+                "Env": [f"{k}={v}" for k, v in (new_sandbox.metadata or {}).items()],
+                "HostConfig": {
+                    "CpuCount": new_sandbox.cpu_count,
+                    "Memory": (
+                        new_sandbox.memory_mb * 1024 * 1024
+                        if new_sandbox.memory_mb
+                        else None
+                    ),
+                    "Binds": [
+                        f"{host}:{container}"
+                        for host, container in (new_sandbox.volumes or {}).items()
+                    ],
+                    "PortBindings": {
+                        f"{container}/tcp": [{"HostPort": str(host)}]
+                        for container, host in (new_sandbox.ports or {}).items()
+                    },
+                    "SecurityOpt": ["no-new-privileges:true"],
+                    "CapDrop": ["ALL"],
+                    "CapAdd": new_sandbox.capabilities or [],
+                },
+            }
+
+            container = await client.containers.create(config=container_config)
             await container.start()
+
             return Sandbox(
                 template_id=new_sandbox.template_id,
                 sandbox_id=container.id[:12],

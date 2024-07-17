@@ -56,14 +56,14 @@ class DockerAdapter:
         containers = self.client.containers.list()
         return [
             RunningSandboxes(
-                templateID=(
+                template_id=(
                     container.image.tags[0] if container.image.tags else "unknown"
                 ),
-                sandboxID=container.id[:12],
-                clientID="local",
-                startedAt=container.attrs["Created"],
-                cpuCount=container.attrs["HostConfig"]["NanoCpus"] // 1e9,
-                memoryMB=container.attrs["HostConfig"]["Memory"] // (1024 * 1024),
+                sandbox_id=container.id[:12],
+                client_id="local",
+                started_at=container.attrs["Created"],
+                cpu_count=container.attrs["HostConfig"]["NanoCpus"] // 1e9,
+                memory_mb=container.attrs["HostConfig"]["Memory"] // (1024 * 1024),
                 metadata=container.labels,
             )
             for container in containers
