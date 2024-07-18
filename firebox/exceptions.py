@@ -1,5 +1,12 @@
+from docker.errors import BuildError
+
+
 class SandboxError(Exception):
     """Base exception for sandbox-related errors."""
+
+
+class SandboxBuildError(BuildError):
+    """Base exception for sandbox-related build errors."""
 
 
 class FilesystemError(SandboxError):

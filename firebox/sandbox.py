@@ -1,5 +1,4 @@
 import docker
-from docker import DockerClient
 import asyncio
 import uuid
 from typing import Optional, Any, Dict, List
@@ -7,9 +6,10 @@ from docker.errors import APIError
 from .process import Process
 from .filesystem import Filesystem
 from .models import SandboxConfig
-from .exceptions import SandboxError, TimeoutError
+from .exceptions import SandboxError, TimeoutError, SandboxBuildError
 from .config import config
 from .logs import logger
+from .utils import build_docker_image
 
 
 class Sandbox:
@@ -78,12 +78,15 @@ class Sandbox:
     async def _build_image(self):
         logger.info(f"Building image from Dockerfile: {self.config.dockerfile}")
         try:
-            self.client.images.build(
-                path=".",
+            image_tag = f"{config.container_prefix}_{self.id}"
+            await build_docker_image(
+                self.client,
                 dockerfile=self.config.dockerfile,
-                tag=self.config.image,
+                context=self.config.dockerfile_context,
+                tag=image_tag,
             )
-        except docker.errors.BuildError as e:
+            self.config.image = image_tag
+        except SandboxBuildError as e:
             logger.error(f"Failed to build image: {str(e)}")
             raise SandboxError(f"Failed to build image: {str(e)}")
 

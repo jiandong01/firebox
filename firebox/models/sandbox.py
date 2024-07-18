@@ -32,3 +32,11 @@ class SandboxConfig(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(
         default_factory=dict, description="Optional metadata for the sandbox"
     )
+
+
+class SandboxStatus(BaseModel):
+    sandbox_id: str = Field(..., description="Unique identifier of the sandbox")
+    status: str = Field(..., description="Current status of the sandbox")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Metadata associated with the sandbox"
+    )
