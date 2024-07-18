@@ -4,11 +4,17 @@ from firebox import Sandbox, SandboxConfig
 
 
 async def main():
+    # Create a temporary directory for persistent storage
+    persistent_storage_path = "./sandbox_data"
+    os.makedirs(persistent_storage_path, exist_ok=True)
+
     config = SandboxConfig(
         image="kalilinux/kali-rolling",
         cpu=1,
         memory="2g",
         environment={"DEBIAN_FRONTEND": "noninteractive"},
+        persistent_storage_path=persistent_storage_path,
+        cwd="/sandbox",
     )
 
     sandbox = Sandbox(config)
@@ -38,7 +44,7 @@ async def main():
 
         # Run nmap scan on localhost
         print("Running nmap scan...")
-        scan_cmd = "nmap -sV -p- 127.0.0.1 -oN /home/user/nmap_scan_results.txt"
+        scan_cmd = "nmap -sV -p- 127.0.0.1 -oN /sandbox/nmap_scan_results.txt"
         scan_process = await sandbox.process.start(scan_cmd)
         scan_process.on_stdout = lambda output: print(
             f"Scan output: {output.line.strip()}"
@@ -47,9 +53,7 @@ async def main():
         print(f"Nmap scan completed with exit code: {scan_result['exit_code']}")
 
         # Check if the scan results file exists
-        file_exists = await sandbox.filesystem.exists(
-            "/home/user/nmap_scan_results.txt"
-        )
+        file_exists = await sandbox.filesystem.exists("nmap_scan_results.txt")
         if not file_exists:
             print("Error: Nmap scan results file not found.")
             return
@@ -57,21 +61,18 @@ async def main():
         # Read the scan results
         print("Reading scan results...")
         try:
-            scan_results = await sandbox.filesystem.read(
-                "/home/user/nmap_scan_results.txt"
-            )
+            scan_results = await sandbox.filesystem.read("nmap_scan_results.txt")
             print("Scan Results:")
             print(scan_results)
 
-            # Download the scan results to the host machine
-            print("Downloading scan results to host machine...")
-            host_output_path = "nmap_scan_results.txt"
-            await sandbox.filesystem.download_file(
-                "/home/user/nmap_scan_results.txt", host_output_path
+            # The scan results file is already in the persistent storage,
+            # so we don't need to download it separately.
+            host_output_path = os.path.join(
+                persistent_storage_path, "nmap_scan_results.txt"
             )
-            print(f"Scan results downloaded to: {os.path.abspath(host_output_path)}")
+            print(f"Scan results are available at: {os.path.abspath(host_output_path)}")
         except FileNotFoundError:
-            print("Error: Failed to read or download the scan results file.")
+            print("Error: Failed to read the scan results file.")
         except Exception as e:
             print(f"An error occurred: {str(e)}")
 

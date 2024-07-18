@@ -1,3 +1,4 @@
+import os
 import docker
 import asyncio
 import uuid
@@ -25,6 +26,10 @@ class Sandbox:
 
     async def init(self):
         logger.info(f"Initializing sandbox with ID: {self.id}")
+
+        # Ensure the persistent storage directory exists on the host
+        os.makedirs(self.config.persistent_storage_path, exist_ok=True)
+
         if self.config.dockerfile:
             await self._build_image()
 
@@ -46,14 +51,19 @@ class Sandbox:
                     stdin_open=True,
                     cpu_count=self.config.cpu,
                     mem_limit=self.config.memory,
-                    volumes=self.config.volumes,
+                    volumes={
+                        os.path.abspath(self.config.persistent_storage_path): {
+                            "bind": self.config.cwd,
+                            "mode": "rw",
+                        }
+                    },
                     environment=self.config.environment,
-                    working_dir=self.cwd,
+                    working_dir=self.config.cwd,
                     command="tail -f /dev/null",  # Keep container running
                 )
             except docker.errors.APIError as e:
                 logger.error(f"Failed to create container: {str(e)}")
-                raise APIError(f"Failed to create container: {str(e)}")
+                raise
 
         if self.container.status != "running":
             logger.info(f"Starting container {config.container_prefix}_{self.id}")
@@ -61,7 +71,7 @@ class Sandbox:
                 self.container.start()
             except docker.errors.APIError as e:
                 logger.error(f"Failed to start container: {str(e)}")
-                raise APIError(f"Failed to start container: {str(e)}")
+                raise
 
         self.container.reload()
         if self.container.status != "running":
@@ -148,12 +158,12 @@ class Sandbox:
     async def close(self):
         if self.container:
             logger.info(
-                f"Stopping and removing container {config.container_prefix}_{self.id} and its associated volume"
+                f"Stopping and removing container {config.container_prefix}_{self.id}"
             )
             try:
                 self.container.remove(v=True, force=True)
                 logger.info(
-                    f"Container {config.container_prefix}_{self.id} and its associated volume removed successfully"
+                    f"Container {config.container_prefix}_{self.id} removed successfully"
                 )
             except docker.errors.NotFound:
                 logger.warning(
@@ -161,9 +171,9 @@ class Sandbox:
                 )
             except docker.errors.APIError as e:
                 logger.error(
-                    f"Failed to remove container {config.container_prefix}_{self.id} and its volume: {str(e)}"
+                    f"Failed to remove container {config.container_prefix}_{self.id}: {str(e)}"
                 )
-                raise SandboxError(f"Failed to remove container and volume: {str(e)}")
+                raise
             finally:
                 self.container = None
         else:

@@ -8,15 +8,17 @@ from firebox.exceptions import TimeoutError
 
 
 @pytest.fixture(scope="function")
-def sandbox_config():
+def sandbox_config(tmp_path):
     logger.info("Creating sandbox configuration")
+    persistent_storage_path = tmp_path / "persistent_storage"
+    persistent_storage_path.mkdir(exist_ok=True)
     sandbox_conf = SandboxConfig(
         image=config.sandbox_image,
         cpu=config.cpu,
         memory=config.memory,
         environment={"TEST_ENV": "test_value"},
-        volumes={"/tmp": {"bind": "/host_tmp", "mode": "rw"}},
-        cwd="/home/user",
+        persistent_storage_path=str(persistent_storage_path),
+        cwd="/sandbox",
     )
     logger.info(f"Sandbox configuration created: {sandbox_conf}")
     return sandbox_conf
@@ -232,3 +234,23 @@ async def test_long_running_process(sandbox):
     assert (
         "Done" in result["stdout"]
     ), f"Expected 'Done' in output, got {result['stdout']}"
+
+
+@pytest.mark.asyncio
+async def test_process_in_persistent_storage(sandbox):
+    logger.info("Starting test_process_in_persistent_storage")
+
+    # Write a script to the persistent storage
+    script_content = "#!/bin/bash\necho 'Hello from persistent storage!'"
+    await sandbox.filesystem.write("test_script.sh", script_content)
+
+    # Make the script executable
+    await sandbox.communicate("chmod +x /sandbox/test_script.sh")
+
+    # Run the script
+    running_process = await sandbox.process.start("/sandbox/test_script.sh")
+    result = await running_process.wait()
+
+    logger.info(f"Process result: {result}")
+    assert result["exit_code"] == 0
+    assert "Hello from persistent storage!" in result["stdout"]

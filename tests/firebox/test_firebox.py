@@ -57,14 +57,16 @@ def cleanup_containers(docker_client):
 
 
 @pytest.fixture(scope="function")
-def sandbox_config():
+def sandbox_config(tmp_path):
+    persistent_storage_path = tmp_path / "persistent_storage"
+    persistent_storage_path.mkdir(exist_ok=True)
     return SandboxConfig(
         image=config.sandbox_image,
         cpu=config.cpu,
         memory=config.memory,
         environment={"TEST_ENV": "test_value"},
-        volumes={"/tmp": {"bind": "/host_tmp", "mode": "rw"}},
-        cwd="/home/user",
+        persistent_storage_path=str(persistent_storage_path),
+        cwd="/sandbox",
     )
 
 
@@ -153,7 +155,7 @@ async def test_firebox_with_existing_id(sandbox_config):
 async def test_firebox_cwd(sandbox):
     logger.info("Testing sandbox current working directory")
     result, exit_code = await sandbox.communicate("pwd")
-    assert result.strip() == "/home/user"
+    assert result.strip() == "/sandbox"
     assert exit_code == 0
 
     sandbox.set_cwd("/tmp")
@@ -165,8 +167,36 @@ async def test_firebox_cwd(sandbox):
 @pytest.mark.asyncio
 async def test_firebox_volume(sandbox):
     logger.info("Testing sandbox volume mounting")
-    result, exit_code = await sandbox.communicate("ls /host_tmp")
-    assert exit_code == 0
+
+    # Create a test file in the persistent storage
+    test_file = "test_volume.txt"
+    test_content = "Hello from persistent storage!"
+    await sandbox.filesystem.write(test_file, test_content)
+
+    # Check if the file exists in the sandbox's working directory
+    result, exit_code = await sandbox.communicate(f"cat {test_file}")
+
+    assert (
+        exit_code == 0
+    ), f"Failed to read file. Exit code: {exit_code}, Result: {result}"
+    assert (
+        result.strip() == test_content
+    ), f"File content mismatch. Expected: {test_content}, Got: {result.strip()}"
+
+    # Verify the file exists in the persistent storage on the host
+    host_file_path = os.path.join(sandbox.config.persistent_storage_path, test_file)
+    assert os.path.exists(
+        host_file_path
+    ), f"File not found in host persistent storage: {host_file_path}"
+
+    with open(host_file_path, "r") as f:
+        host_content = f.read().strip()
+
+    assert (
+        host_content == test_content
+    ), f"Host file content mismatch. Expected: {test_content}, Got: {host_content}"
+
+    logger.info("Sandbox volume mounting test passed successfully")
 
 
 @pytest.mark.asyncio

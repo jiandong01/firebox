@@ -7,7 +7,7 @@ sandbox_image: "fireenv-sandbox:latest"
 container_prefix: "fireenv-sandbox"
 
 # Path for persistent storage in the sandbox
-persistent_storage_path: "/persistent"
+persistent_storage_path: "/tmp/persistent"
 
 # Default CPU allocation for sandboxes
 cpu: 1

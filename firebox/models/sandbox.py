@@ -26,9 +26,10 @@ class SandboxConfig(BaseModel):
     volumes: Dict[str, Dict[str, str]] = Field(
         default_factory=dict, description="Volume mappings for the sandbox"
     )
-    cwd: str = Field(
-        default="/home/user", description="Current working directory in the sandbox"
+    persistent_storage_path: str = Field(
+        default="./sandbox_data", description="Host path for persistent storage"
     )
+    cwd: str = Field(default="/sandbox", description="Working directory in the sandbox")
     metadata: Optional[Dict[str, Any]] = Field(
         default_factory=dict, description="Optional metadata for the sandbox"
     )
