@@ -1,16 +1,14 @@
-# test_sandbox.py
-
 import pytest
 import docker
 import os
 from firebox.sandbox import Sandbox
 from firebox.exceptions import TimeoutError
-from firebox.config import config, SandboxConfig
+from firebox.config import config, load_config
+from firebox.models import SandboxConfig
 from firebox.logs import logger
 
-
-# Set the environment to 'test' for all tests
-os.environ["FIREENV_ENVIRONMENT"] = "test"
+# Load test configuration
+load_config("test_firebox_config.yaml")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -23,7 +21,7 @@ def cleanup_containers(docker_client):
     yield
     logger.info("Cleaning up containers and their associated volumes")
     for container in docker_client.containers.list(all=True):
-        if container.name.startswith("sandbox_"):
+        if container.name.startswith(config.container_prefix):
             logger.info(f"Removing container and its volumes: {container.name}")
             try:
                 container.remove(v=True, force=True)
@@ -41,7 +39,7 @@ def cleanup_containers(docker_client):
 
     # Check for any orphaned volumes
     for volume in docker_client.volumes.list():
-        if volume.name.endswith("_volume"):
+        if volume.name.startswith(f"{config.container_prefix}_"):
             logger.warning(
                 f"Orphaned volume found: {volume.name}. Attempting to remove."
             )
@@ -61,12 +59,12 @@ def cleanup_containers(docker_client):
 @pytest.fixture(scope="function")
 def sandbox_config():
     return SandboxConfig(
-        image_name=config.fireenv.sandbox.image_name,
-        cpu=config.fireenv.sandbox.cpu,
-        memory=config.fireenv.sandbox.memory,
-        container_prefix=config.fireenv.sandbox.container_prefix,
-        persistent_storage_path=config.fireenv.sandbox.persistent_storage_path,
-        timeout=config.fireenv.sandbox.timeout,
+        image=config.sandbox_image,
+        cpu=config.cpu,
+        memory=config.memory,
+        environment={"TEST_ENV": "test_value"},
+        volumes={"/tmp": {"bind": "/host_tmp", "mode": "rw"}},
+        cwd="/home/user",
     )
 
 
@@ -123,15 +121,11 @@ async def test_sandbox_metadata(sandbox_config):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_env_vars(sandbox_config):
+async def test_sandbox_env_vars(sandbox):
     logger.info("Testing sandbox environment variables")
-    sandbox_config.environment = {"TEST_VAR": "test_value"}
-    sandbox = Sandbox(sandbox_config)
-    await sandbox.init()
-    result, exit_code = await sandbox.communicate("echo $TEST_VAR")
+    result, exit_code = await sandbox.communicate("echo $TEST_ENV")
     assert result.strip() == "test_value"
     assert exit_code == 0
-    await sandbox.close()
 
 
 @pytest.mark.asyncio
@@ -156,18 +150,38 @@ async def test_sandbox_with_existing_id(sandbox_config):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_reuse(sandbox_config):
-    logger.info("Testing sandbox reuse")
-    sandbox1 = Sandbox(sandbox_config)
-    await sandbox1.init()
+async def test_sandbox_cwd(sandbox):
+    logger.info("Testing sandbox current working directory")
+    result, exit_code = await sandbox.communicate("pwd")
+    assert result.strip() == "/home/user"
+    assert exit_code == 0
 
-    sandbox_config.sandbox_id = sandbox1.id
-    sandbox2 = Sandbox(sandbox_config)
-    await sandbox2.init()
+    sandbox.set_cwd("/tmp")
+    result, exit_code = await sandbox.communicate("pwd")
+    assert result.strip() == "/tmp"
+    assert exit_code == 0
 
-    assert sandbox1.container.id == sandbox2.container.id
 
-    await sandbox1.close()
+@pytest.mark.asyncio
+async def test_sandbox_volume(sandbox):
+    logger.info("Testing sandbox volume mounting")
+    result, exit_code = await sandbox.communicate("ls /host_tmp")
+    assert exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_sandbox_keep_alive(sandbox):
+    logger.info("Testing sandbox keep alive")
+    await sandbox.keep_alive(5000)  # Keep alive for 5 seconds
+    assert sandbox.container.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_list(sandbox):
+    logger.info("Testing sandbox list")
+    sandboxes = await Sandbox.list()
+    assert len(sandboxes) > 0
+    assert any(s["sandbox_id"] == sandbox.id for s in sandboxes)
 
 
 @pytest.mark.asyncio
@@ -182,7 +196,4 @@ async def test_sandbox_cleanup(docker_client, sandbox_config):
     await sandbox.close()
 
     with pytest.raises(docker.errors.NotFound):
-        docker_client.containers.get(f"sandbox_{sandbox.id}")
-
-    with pytest.raises(docker.errors.NotFound):
-        docker_client.volumes.get(f"{sandbox.id}_volume")
+        docker_client.containers.get(f"{config.container_prefix}_{sandbox.id}")

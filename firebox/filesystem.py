@@ -3,15 +3,13 @@ import asyncio
 from typing import List, Union, Callable
 import base64
 from .config import config
-from .logs import setup_logging
-
-logger = setup_logging()
+from .logs import logger
 
 
 class Filesystem:
     def __init__(self, sandbox):
         self.sandbox = sandbox
-        self.persistent_root = config.sandbox.persistent_storage_path
+        self.persistent_root = config.persistent_storage_path
 
     async def upload_file(self, local_path: str, remote_path: str):
         logger.info(f"Uploading file from {local_path} to {remote_path}")

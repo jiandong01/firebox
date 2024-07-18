@@ -1,7 +1,7 @@
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import yaml
-from pydantic import BaseSettings, Field
+from pydantic import BaseSettings, Field, validator
 
 
 class FireboxConfig(BaseSettings):
@@ -14,12 +14,14 @@ class FireboxConfig(BaseSettings):
     persistent_storage_path: str = Field(
         default="/persistent", env="FIREBOX_PERSISTENT_STORAGE_PATH"
     )
-    default_cpu: int = Field(default=1, env="FIREBOX_DEFAULT_CPU")
-    default_memory: str = Field(default="1g", env="FIREBOX_DEFAULT_MEMORY")
-    default_timeout: int = Field(default=30, env="FIREBOX_DEFAULT_TIMEOUT")
-    docker_host: str = Field(
-        default="unix://var/run/docker.sock", env="FIREBOX_DOCKER_HOST"
-    )
+    cpu: int = Field(default=1, env="FIREBOX_DEFAULT_CPU")
+    memory: str = Field(default="1g", env="FIREBOX_DEFAULT_MEMORY")
+    timeout: int = Field(default=30, env="FIREBOX_DEFAULT_TIMEOUT")
+    docker_host: str = Field(default="tcp://localhost:2375", env="FIREBOX_DOCKER_HOST")
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
 
     @classmethod
     def from_yaml(cls, yaml_file: str) -> "FireboxConfig":
@@ -28,12 +30,12 @@ class FireboxConfig(BaseSettings):
         return cls(**config_dict)
 
 
-config = FireboxConfig()
-
-
-def load_config(config_file: str = "firebox_config.yaml"):
-    global config
+def load_config(config_file: str = "firebox_config.yaml") -> FireboxConfig:
     if os.path.exists(config_file):
-        config = FireboxConfig.from_yaml(config_file)
+        return FireboxConfig.from_yaml(config_file)
     else:
-        config = FireboxConfig()
+        return FireboxConfig()
+
+
+# Load configuration
+config = load_config()

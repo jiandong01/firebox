@@ -1,0 +1,23 @@
+# Firebox Configuration
+
+# Docker image for the sandbox
+sandbox_image: "fireenv-sandbox:latest"
+
+# Prefix for container names
+container_prefix: "fireenv-sandbox"
+
+# Path for persistent storage in the sandbox
+persistent_storage_path: "/persistent"
+
+# Default CPU allocation for sandboxes
+cpu: 1
+
+# Default memory allocation for sandboxes
+memory: "1g"
+
+# Default timeout for operations (in seconds)
+timeout: 30
+
+# Docker host URL
+# docker_host: "unix://var/run/docker.sock"
+docker_host: "tcp://localhost:2375"
