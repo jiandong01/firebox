@@ -3,6 +3,7 @@ import time
 from typing import Dict, Optional, Any, List, Callable
 from .logs import setup_logging
 from .exceptions import TimeoutError
+from .models import EnvVars, ProcessMessage
 
 logger = setup_logging()
 
@@ -14,12 +15,12 @@ class Process:
     async def start(
         self,
         cmd: str,
-        env_vars: Optional[Dict[str, str]] = None,
+        env_vars: Optional[EnvVars] = None,
         cwd: Optional[str] = None,
         timeout: int = 60,
-        on_stdout: Optional[Callable[[str], None]] = None,
-        on_stderr: Optional[Callable[[str], None]] = None,
-        on_exit: Optional[Callable[[], None]] = None,
+        on_stdout: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_stderr: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_exit: Optional[Callable[[int], Any]] = None,
     ) -> "RunningProcess":
         logger.info(f"Starting process: {cmd}")
         full_cmd = []
@@ -118,9 +119,9 @@ class RunningProcess:
         process_id: str,
         output_file: str,
         exit_code_file: str,
-        on_stdout: Optional[Callable[[str], None]] = None,
-        on_stderr: Optional[Callable[[str], None]] = None,
-        on_exit: Optional[Callable[[], None]] = None,
+        on_stdout: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_stderr: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_exit: Optional[Callable[[int], Any]] = None,
     ):
         self.process = process
         self.pid = pid
@@ -258,7 +259,7 @@ class RunningProcess:
         result = await self.get_result()
         if self.on_exit:
             logger.debug(f"Calling on_exit callback for process {self.pid}")
-            self.on_exit()
+            self.on_exit(result["exit_code"])
         return result
 
     async def send_stdin(self, input: str):
@@ -280,10 +281,14 @@ class RunningProcess:
                     f"tail -c +{last_size + 1} {self.output_file}"
                 )
                 logger.debug(f"New output for process {self.pid}: {new_output}")
-                if self.on_stdout:
-                    self.on_stdout(new_output)
-                if self.on_stderr:
-                    self.on_stderr(new_output)
+                if self.on_stdout or self.on_stderr:
+                    timestamp = int(time.time_ns())
+                    message = ProcessMessage(line=new_output, timestamp=timestamp)
+                    if self.on_stdout:
+                        self.on_stdout(message)
+                    if self.on_stderr:
+                        message.error = True
+                        self.on_stderr(message)
                 last_size = current_size
 
             if await self._is_process_complete():

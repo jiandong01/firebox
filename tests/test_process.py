@@ -1,7 +1,7 @@
 import pytest
 import asyncio
 from firebox.sandbox import Sandbox
-from firebox.models import SandboxConfig
+from firebox.models import SandboxConfig, ProcessMessage
 from firebox.config import config
 from firebox.logs import logger
 from firebox.exceptions import TimeoutError
@@ -122,19 +122,22 @@ async def test_process_send_stdin(sandbox):
 async def test_process_on_exit(sandbox):
     logger.info("Starting test_process_on_exit")
     exit_called = False
+    exit_code = None
 
-    def on_exit():
-        nonlocal exit_called
+    def on_exit(code: int):
+        nonlocal exit_called, exit_code
         exit_called = True
-        logger.info("Exit callback called")
+        exit_code = code
+        logger.info(f"Exit callback called with code: {code}")
 
     running_process = await sandbox.process.start("echo 'Test'", on_exit=on_exit)
     logger.info(f"Started echo process with PID: {running_process.pid}")
 
     await running_process.wait()
-    logger.info("Echo process completed")
+    logger.info("Process completed")
 
-    assert exit_called
+    assert exit_called, "Exit callback was not called"
+    assert exit_code == 0, f"Expected exit code 0, got {exit_code}"
 
 
 @pytest.mark.asyncio
@@ -159,9 +162,9 @@ async def test_process_stream_output(sandbox):
     logger.info("Starting test_process_stream_output")
     output = []
 
-    def on_stdout(data):
-        logger.debug(f"Received output: {data}")
-        output.append(data.strip())
+    def on_stdout(message: ProcessMessage):
+        logger.debug(f"Received output: {message}")
+        output.append(message.line.strip())
 
     running_process = await sandbox.process.start(
         "echo 'Line 1' && sleep 1 && echo 'Line 2'", on_stdout=on_stdout

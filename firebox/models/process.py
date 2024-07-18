@@ -1,6 +1,24 @@
 from pydantic import BaseModel, Field
 from typing import Dict, Optional
 
+EnvVars = Dict[str, str]
+
+
+class ProcessMessage(BaseModel):
+    """
+    A message from a process.
+    """
+
+    line: str
+    error: bool = False
+    timestamp: int
+    """
+    Unix epoch in nanoseconds
+    """
+
+    def __str__(self):
+        return self.line
+
 
 class ProcessConfig(BaseModel):
     cmd: str = Field(..., description="Command to execute")
