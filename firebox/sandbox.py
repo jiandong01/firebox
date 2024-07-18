@@ -1,104 +1,73 @@
-import os
-import docker
 import asyncio
-import uuid
-from typing import Optional, Any, Dict, List
-from docker.errors import APIError
-from .process import Process
-from .filesystem import Filesystem
-from .models import SandboxConfig
-from .exceptions import SandboxError, TimeoutError, SandboxBuildError
+import threading
+from typing import Optional, Any, Dict, List, Callable, Union, IO
+from .docker_sandbox import DockerSandbox
+from .process import ProcessManager
+from .filesystem import FilesystemManager
+from .models import SandboxConfig, EnvVars, ProcessMessage, OpenPort
 from .config import config
 from .logs import logger
-from .utils import build_docker_image
 
 
 class Sandbox:
-    def __init__(self, sandbox_config: Optional[SandboxConfig] = None):
-        self.config = sandbox_config or SandboxConfig()
-        self.id = self.config.sandbox_id or str(uuid.uuid4())
-        self.client = docker.from_env()
-        self.container = None
-        self.process = Process(self)
-        self.filesystem = Filesystem(self)
-        self.cwd = self.config.cwd
-        self.metadata = self.config.metadata or {}
+    def __init__(
+        self,
+        template: str = "base",
+        sandbox_config: Optional[SandboxConfig] = None,
+        api_key: Optional[str] = None,
+        cwd: Optional[str] = None,
+        env_vars: Optional[EnvVars] = None,
+        on_scan_ports: Optional[Callable[[List[OpenPort]], Any]] = None,
+        on_stdout: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_stderr: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_exit: Optional[Union[Callable[[int], Any], Callable[[], Any]]] = None,
+        metadata: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = config.timeout,
+        **kwargs,
+    ):
+        self.config = sandbox_config or SandboxConfig(template=template)
+        self.api_key = api_key
+        self.cwd = cwd or self.config.cwd
+        self.env_vars = env_vars or {}
+        self.on_scan_ports = on_scan_ports
+        self.on_stdout = on_stdout
+        self.on_stderr = on_stderr
+        self.on_exit = on_exit
+        self.metadata = metadata or {}
+        self.timeout = timeout
+
+        self._docker_sandbox = DockerSandbox(
+            self.config,
+            env_vars=self.env_vars,
+            on_stdout=self.on_stdout,
+            on_stderr=self.on_stderr,
+            on_exit=self.on_exit,
+        )
+        self._process_manager = ProcessManager(self._docker_sandbox)
+        self._filesystem_manager = FilesystemManager(self._docker_sandbox)
+        self._process_cleanup = []
+
+    @property
+    def id(self) -> str:
+        return self._docker_sandbox.id
+
+    @property
+    def process(self) -> ProcessManager:
+        return self._process_manager
+
+    @property
+    def filesystem(self) -> FilesystemManager:
+        return self._filesystem_manager
 
     async def init(self):
-        logger.info(f"Initializing sandbox with ID: {self.id}")
-
-        # Ensure the persistent storage directory exists on the host
-        os.makedirs(self.config.persistent_storage_path, exist_ok=True)
-
-        if self.config.dockerfile:
-            await self._build_image()
-
-        try:
-            self.container = self.client.containers.get(
-                f"{config.container_prefix}_{self.id}"
-            )
-            logger.info(
-                f"Container {config.container_prefix}_{self.id} already exists, status: {self.container.status}"
-            )
-        except docker.errors.NotFound:
-            logger.info(f"Creating new container {config.container_prefix}_{self.id}")
-            try:
-                self.container = self.client.containers.run(
-                    self.config.image,
-                    name=f"{config.container_prefix}_{self.id}",
-                    detach=True,
-                    tty=True,
-                    stdin_open=True,
-                    cpu_count=self.config.cpu,
-                    mem_limit=self.config.memory,
-                    volumes={
-                        os.path.abspath(self.config.persistent_storage_path): {
-                            "bind": self.config.cwd,
-                            "mode": "rw",
-                        }
-                    },
-                    environment=self.config.environment,
-                    working_dir=self.config.cwd,
-                    command="tail -f /dev/null",  # Keep container running
-                )
-            except docker.errors.APIError as e:
-                logger.error(f"Failed to create container: {str(e)}")
-                raise
-
-        if self.container.status != "running":
-            logger.info(f"Starting container {config.container_prefix}_{self.id}")
-            try:
-                self.container.start()
-            except docker.errors.APIError as e:
-                logger.error(f"Failed to start container: {str(e)}")
-                raise
-
-        self.container.reload()
-        if self.container.status != "running":
-            logs = self.container.logs().decode("utf-8")
-            logger.error(f"Container failed to start. Logs:\n{logs}")
-            raise RuntimeError(
-                f"Failed to start container. Status: {self.container.status}"
-            )
-
-        logger.info(f"Container {config.container_prefix}_{self.id} is running")
-        await self.ensure_container_ready()
+        await self._docker_sandbox.init(timeout=self.timeout)
         await self._init_scripts()
+        if self.on_scan_ports:
+            open_ports = await self._docker_sandbox.scan_ports()
+            self.on_scan_ports(open_ports)
 
-    async def _build_image(self):
-        logger.info(f"Building image from Dockerfile: {self.config.dockerfile}")
-        try:
-            image_tag = f"{config.container_prefix}_{self.id}"
-            await build_docker_image(
-                self.client,
-                dockerfile=self.config.dockerfile,
-                context=self.config.dockerfile_context,
-                tag=image_tag,
-            )
-            self.config.image = image_tag
-        except SandboxBuildError as e:
-            logger.error(f"Failed to build image: {str(e)}")
-            raise SandboxError(f"Failed to build image: {str(e)}")
+        if self.on_stderr or self.on_stdout:
+            self._handle_start_cmd_logs()
 
     async def _init_scripts(self):
         logger.info("Initializing scripts")
@@ -109,7 +78,21 @@ class Sandbox:
             "export PATH=$PATH:/root/commands",
         ]
         for cmd in commands:
-            await self.communicate(cmd)
+            await self._docker_sandbox.communicate(cmd)
+
+    def _handle_start_cmd_logs(self):
+        def run_in_thread():
+            asyncio.run(
+                self.process.start(
+                    "sudo journalctl --follow --lines=all -o cat _SYSTEMD_UNIT=start_cmd.service",
+                    cwd="/",
+                    env_vars={},
+                )
+            )
+
+        thread = threading.Thread(target=run_in_thread)
+        thread.start()
+        self._process_cleanup.append(thread.join)
 
     async def add_script(self, name: str, content: str) -> None:
         """Add a custom script to the sandbox."""
@@ -117,81 +100,48 @@ class Sandbox:
         script_path = f"/root/commands/{name}"
         escaped_content = content.replace('"', '\\"')
         command = f'echo "{escaped_content}" > {script_path} && chmod +x {script_path}'
-        await self.communicate(command)
-
-    async def communicate(self, command: str, timeout: int = 60) -> tuple[str, int]:
-        logger.info(f"Executing command: {command}")
-        try:
-            exec_result = await asyncio.wait_for(
-                self._exec_run(command), timeout=timeout
-            )
-            output = exec_result.output.decode("utf-8").strip()
-            exit_code = exec_result.exit_code
-            logger.info(f"Raw command output: '{output}', exit code: {exit_code}")
-            return output, exit_code
-        except asyncio.TimeoutError:
-            logger.error(f"Command execution timed out after {timeout} seconds")
-            raise TimeoutError(f"Command execution timed out after {timeout} seconds")
-        except Exception as e:
-            logger.error(f"Command execution failed: {str(e)}")
-            raise SandboxError(f"Command execution failed: {str(e)}")
-
-    async def _exec_run(self, command: str):
-        return await asyncio.to_thread(
-            self.container.exec_run,
-            cmd=["/bin/bash", "-c", command],
-            workdir=self.cwd,
-            stream=False,
-            demux=False,
-        )
-
-    async def ensure_container_ready(self):
-        max_retries = 5
-        retry_delay = 1
-        for _ in range(max_retries):
-            self.container.reload()
-            if self.container.status == "running":
-                return
-            await asyncio.sleep(retry_delay)
-        raise RuntimeError(f"Container failed to start after {max_retries} retries")
+        await self._docker_sandbox.communicate(command)
 
     async def close(self):
-        if self.container:
-            logger.info(
-                f"Stopping and removing container {config.container_prefix}_{self.id}"
-            )
-            try:
-                self.container.remove(v=True, force=True)
-                logger.info(
-                    f"Container {config.container_prefix}_{self.id} removed successfully"
-                )
-            except docker.errors.NotFound:
-                logger.warning(
-                    f"Container {config.container_prefix}_{self.id} not found, it may have been already removed"
-                )
-            except docker.errors.APIError as e:
-                logger.error(
-                    f"Failed to remove container {config.container_prefix}_{self.id}: {str(e)}"
-                )
-                raise
-            finally:
-                self.container = None
-        else:
-            logger.warning(f"No container to remove for sandbox {self.id}")
-
-        logger.info(f"Sandbox {self.id} closed successfully")
+        for cleanup in self._process_cleanup:
+            cleanup()
+        await self._docker_sandbox.close()
 
     @classmethod
-    async def reconnect(cls, sandbox_id: str) -> "Sandbox":
+    async def reconnect(
+        cls,
+        sandbox_id: str,
+        cwd: Optional[str] = None,
+        env_vars: Optional[EnvVars] = None,
+        on_scan_ports: Optional[Callable[[List[OpenPort]], Any]] = None,
+        on_stdout: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_stderr: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_exit: Optional[Union[Callable[[int], Any], Callable[[], Any]]] = None,
+        timeout: Optional[float] = config.timeout,
+        api_key: Optional[str] = None,
+    ) -> "Sandbox":
         logger.info(f"Reconnecting to sandbox with ID: {sandbox_id}")
         sandbox_config = SandboxConfig(sandbox_id=sandbox_id)
-        sandbox = cls(sandbox_config)
+        sandbox = cls(
+            sandbox_config=sandbox_config,
+            cwd=cwd,
+            env_vars=env_vars,
+            on_scan_ports=on_scan_ports,
+            on_stdout=on_stdout,
+            on_stderr=on_stderr,
+            on_exit=on_exit,
+            timeout=timeout,
+            api_key=api_key,
+        )
         await sandbox.init()
         return sandbox
 
     def get_hostname(self, port: Optional[int] = None) -> str:
         base_url = f"{self.id}.sandbox.{config.domain}"
         return f"{base_url}:{port}" if port else base_url
+
+    def get_protocol(self, secure: bool = True) -> str:
+        return "https" if secure else "http"
 
     def set_metadata(self, key: str, value: Any):
         self.metadata[key] = value
@@ -201,8 +151,7 @@ class Sandbox:
 
     def set_cwd(self, path: str):
         self.cwd = path
-        if self.container:
-            self.container.exec_run(f"cd {path}")
+        self._docker_sandbox.set_cwd(path)
 
     async def keep_alive(self, duration: int):
         """Keep the sandbox alive for the specified duration (in milliseconds)."""
@@ -212,15 +161,40 @@ class Sandbox:
     @classmethod
     async def list(cls) -> List[Dict[str, Any]]:
         """List all running sandboxes."""
-        client = docker.from_env()
-        containers = client.containers.list(
-            filters={"name": f"{config.container_prefix}_"}
-        )
-        return [
-            {
-                "sandbox_id": container.name.split("_")[-1],
-                "status": container.status,
-                "metadata": container.labels.get("metadata", {}),
-            }
-            for container in containers
-        ]
+        return await DockerSandbox.list()
+
+    async def __aenter__(self):
+        await self.init()
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.close()
+
+    def file_url(self) -> str:
+        """
+        Return a URL that can be used to upload files to the sandbox via a multipart/form-data POST request.
+        This is useful if you're uploading files directly from the browser.
+        The file will be uploaded to the user's home directory with the same name.
+        If a file with the same name already exists, it will be overwritten.
+        """
+        hostname = self.get_hostname(config.ENVD_PORT)
+        protocol = self.get_protocol()
+        return f"{protocol}://{hostname}{config.FILE_ROUTE}"
+
+    async def upload_file(
+        self, file: IO, timeout: Optional[float] = config.timeout
+    ) -> str:
+        """
+        Upload a file to the sandbox.
+        The file will be uploaded to the user's home (`/home/user`) directory with the same name.
+        If a file with the same name already exists, it will be overwritten.
+        """
+        return await self._docker_sandbox.upload_file(file, timeout)
+
+    async def download_file(
+        self, remote_path: str, timeout: Optional[float] = config.timeout
+    ) -> bytes:
+        """
+        Download a file from the sandbox and returns its content as bytes.
+        """
+        return await self._docker_sandbox.download_file(remote_path, timeout)

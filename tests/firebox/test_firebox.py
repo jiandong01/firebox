@@ -1,7 +1,7 @@
 import pytest
 import docker
 import os
-from firebox.sandbox import Sandbox
+from firebox.docker_sandbox import Sandbox
 from firebox.exceptions import TimeoutError
 from firebox.config import config, load_config
 from firebox.models import SandboxConfig

@@ -13,6 +13,18 @@ class FilesystemError(SandboxError):
     """Exception raised for filesystem-related errors."""
 
 
+class FileNotFoundError(FilesystemError):
+    """Exception raised for filesystem-related file not found errors."""
+
+
+class OSError(FilesystemError):
+    """Exception raised for filesystem-related OS errors."""
+
+
+class IOError(FilesystemError):
+    """Exception raised for filesystem-related IO errors."""
+
+
 class ProcessError(SandboxError):
     """Exception raised for process-related errors."""
 

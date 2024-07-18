@@ -1,11 +1,12 @@
 import os
 import base64
-from typing import List, Union
+from typing import List, Union, Optional
 from .logs import logger
 from .watcher import Watcher
+from .exceptions import FileNotFoundError, IOError, OSError
 
 
-class Filesystem:
+class FilesystemManager:
     def __init__(self, sandbox):
         self.sandbox = sandbox
 
@@ -14,7 +15,9 @@ class Filesystem:
             return path
         return os.path.join(self.sandbox.cwd, path)
 
-    async def upload_file(self, local_path: str, remote_path: str):
+    async def upload_file(
+        self, local_path: str, remote_path: str, timeout: Optional[float] = None
+    ):
         logger.info(f"Uploading file from {local_path} to {remote_path}")
 
         if not os.path.exists(local_path):
@@ -24,7 +27,7 @@ class Filesystem:
 
         # Create the directory structure if it doesn't exist
         remote_dir = os.path.dirname(full_remote_path)
-        await self.sandbox.communicate(f"mkdir -p {remote_dir}")
+        await self.sandbox.communicate(f"mkdir -p {remote_dir}", timeout=timeout)
 
         with open(local_path, "rb") as local_file:
             content = local_file.read()
@@ -32,7 +35,8 @@ class Filesystem:
         encoded_content = base64.b64encode(content).decode()
 
         result, exit_code = await self.sandbox.communicate(
-            f"echo '{encoded_content}' | base64 -d > {full_remote_path}"
+            f"echo '{encoded_content}' | base64 -d > {full_remote_path}",
+            timeout=timeout,
         )
 
         if exit_code != 0:
@@ -41,19 +45,23 @@ class Filesystem:
         logger.info("Upload completed successfully")
         return full_remote_path
 
-    async def download_file(self, remote_path: str, local_path: str):
+    async def download_file(
+        self, remote_path: str, local_path: str, timeout: Optional[float] = None
+    ):
         logger.info(f"Downloading file from {remote_path} to {local_path}")
 
         full_remote_path = self._get_full_path(remote_path)
 
         # Check if the remote file exists
         exists_result, exists_exit_code = await self.sandbox.communicate(
-            f"[ -f {full_remote_path} ]"
+            f"[ -f {full_remote_path} ]", timeout=timeout
         )
         if exists_exit_code != 0:
             raise FileNotFoundError(f"Remote file does not exist: {full_remote_path}")
 
-        result, exit_code = await self.sandbox.communicate(f"base64 {full_remote_path}")
+        result, exit_code = await self.sandbox.communicate(
+            f"base64 {full_remote_path}", timeout=timeout
+        )
 
         if exit_code != 0:
             raise IOError(f"Failed to download file: {result}")
@@ -69,9 +77,11 @@ class Filesystem:
         logger.info("Download completed successfully")
         return local_path
 
-    async def list(self, path: str) -> List[str]:
+    async def list(self, path: str, timeout: Optional[float] = None) -> List[str]:
         full_path = self._get_full_path(path)
-        result, exit_code = await self.sandbox.communicate(f"ls -1a {full_path}")
+        result, exit_code = await self.sandbox.communicate(
+            f"ls -1a {full_path}", timeout=timeout
+        )
         if exit_code != 0:
             raise FileNotFoundError(
                 f"Directory not found or couldn't be listed: {full_path}"
@@ -80,73 +90,79 @@ class Filesystem:
             item for item in result.splitlines() if item and item not in [".", ".."]
         ]
 
-    async def read(self, path: str) -> bytes:
+    async def read(self, path: str, timeout: Optional[float] = None) -> bytes:
         full_path = self._get_full_path(path)
-        result, exit_code = await self.sandbox.communicate(f"cat {full_path}")
+        result, exit_code = await self.sandbox.communicate(
+            f"cat {full_path}", timeout=timeout
+        )
         if exit_code != 0:
             raise FileNotFoundError(f"File not found or couldn't be read: {full_path}")
         return result.encode("utf-8")
 
-    async def write(self, path: str, content: Union[str, bytes]):
+    async def write(
+        self, path: str, content: Union[str, bytes], timeout: Optional[float] = None
+    ):
         full_path = self._get_full_path(path)
         if isinstance(content, str):
             content = content.encode("utf-8")
 
         # Create the directory if it doesn't exist
         dir_path = os.path.dirname(full_path)
-        await self.sandbox.communicate(f"mkdir -p {dir_path}")
+        await self.sandbox.communicate(f"mkdir -p {dir_path}", timeout=timeout)
 
         # Write content to file
         encoded_content = content.replace(b"'", b"'\"'\"'")  # Escape single quotes
         command = f"echo -n '{encoded_content.decode()}' > {full_path}"
-        result, exit_code = await self.sandbox.communicate(command)
+        result, exit_code = await self.sandbox.communicate(command, timeout=timeout)
 
         if exit_code != 0:
             raise IOError(f"Failed to write to file: {full_path}")
 
         return full_path
 
-    async def delete(self, path: str):
+    async def delete(self, path: str, timeout: Optional[float] = None):
         full_path = self._get_full_path(path)
         result, exit_code = await self.sandbox.communicate(
-            f"rm -rf '{full_path}' && echo 'deleted' || echo 'failed'"
+            f"rm -rf '{full_path}' && echo 'deleted' || echo 'failed'", timeout=timeout
         )
         if exit_code != 0 or "failed" in result:
             raise FileNotFoundError(
                 f"File or directory not found or couldn't be deleted: {full_path}"
             )
 
-    async def make_dir(self, path: str):
+    async def make_dir(self, path: str, timeout: Optional[float] = None):
         full_path = self._get_full_path(path)
-        result, exit_code = await self.sandbox.communicate(f"mkdir -p {full_path}")
+        result, exit_code = await self.sandbox.communicate(
+            f"mkdir -p {full_path}", timeout=timeout
+        )
         if exit_code != 0:
             raise OSError(f"Couldn't create directory: {full_path}")
 
-    async def exists(self, path: str) -> bool:
+    async def exists(self, path: str, timeout: Optional[float] = None) -> bool:
         full_path = self._get_full_path(path)
         result, exit_code = await self.sandbox.communicate(
-            f"[ -e {full_path} ] && echo 'exists' || echo 'not exists'"
+            f"[ -e {full_path} ] && echo 'exists' || echo 'not exists'", timeout=timeout
         )
         return exit_code == 0 and "exists" == result
 
-    async def is_file(self, path: str) -> bool:
+    async def is_file(self, path: str, timeout: Optional[float] = None) -> bool:
         full_path = self._get_full_path(path)
         result, exit_code = await self.sandbox.communicate(
-            f"[ -f {full_path} ] && echo 'is file' || echo 'not file'"
+            f"[ -f {full_path} ] && echo 'is file' || echo 'not file'", timeout=timeout
         )
         return exit_code == 0 and "is file" == result
 
-    async def is_dir(self, path: str) -> bool:
+    async def is_dir(self, path: str, timeout: Optional[float] = None) -> bool:
         full_path = self._get_full_path(path)
         result, exit_code = await self.sandbox.communicate(
-            f"[ -d {full_path} ] && echo 'is dir' || echo 'not dir'"
+            f"[ -d {full_path} ] && echo 'is dir' || echo 'not dir'", timeout=timeout
         )
         return exit_code == 0 and "is dir" == result
 
-    async def get_size(self, path: str) -> int:
+    async def get_size(self, path: str, timeout: Optional[float] = None) -> int:
         full_path = self._get_full_path(path)
         result, exit_code = await self.sandbox.communicate(
-            f"du -sb {full_path} | cut -f1"
+            f"du -sb {full_path} | cut -f1", timeout=timeout
         )
         if exit_code != 0:
             raise OSError(f"Couldn't get size of: {full_path}")

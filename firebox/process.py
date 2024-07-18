@@ -8,7 +8,7 @@ from .models import EnvVars, ProcessMessage
 logger = setup_logging()
 
 
-class Process:
+class ProcessManager:
     def __init__(self, sandbox):
         self.sandbox = sandbox
 
@@ -79,14 +79,6 @@ class Process:
             logger.error(f"Error starting process: {str(e)}")
             raise
 
-    async def _is_process_running(self, pid: int) -> bool:
-        cmd = f"ps -o pid=,stat= -p {pid}"
-        result, _ = await self.sandbox.communicate(cmd)
-        is_running = bool(result.strip())
-        status = result.split()[-1] if result.strip() else "N/A"
-        logger.info(f"Process {pid} status: {status}, running: {is_running}")
-        return is_running
-
     async def list(self) -> List[Dict[str, Any]]:
         logger.info("Listing all processes in the sandbox")
         cmd = "ps -eo pid,ppid,cmd --no-headers"
@@ -110,11 +102,19 @@ class Process:
             )
         return None
 
+    async def _is_process_running(self, pid: int) -> bool:
+        cmd = f"ps -o pid=,stat= -p {pid}"
+        result, _ = await self.sandbox.communicate(cmd)
+        is_running = bool(result.strip())
+        status = result.split()[-1] if result.strip() else "N/A"
+        logger.info(f"Process {pid} status: {status}, running: {is_running}")
+        return is_running
+
 
 class RunningProcess:
     def __init__(
         self,
-        process: Process,
+        process_manager: ProcessManager,
         pid: int,
         process_id: str,
         output_file: str,
@@ -123,7 +123,7 @@ class RunningProcess:
         on_stderr: Optional[Callable[[ProcessMessage], Any]] = None,
         on_exit: Optional[Callable[[int], Any]] = None,
     ):
-        self.process = process
+        self.process_manager = process_manager
         self.pid = pid
         self.process_id = process_id
         self.output_file = output_file
@@ -134,52 +134,26 @@ class RunningProcess:
         self.output = {"stdout": "", "stderr": ""}
         logger.debug(f"RunningProcess initialized for PID: {pid}")
 
-    async def _get_process_status(self) -> str:
-        cmd = f"ps -o stat= -p {self.pid}"
-        result, _ = await self.process.sandbox.communicate(cmd)
-        status = result.strip()
-        logger.info(f"Process {self.pid} status: '{status}'")
-        return status
+    async def wait(self, timeout: Optional[int] = None) -> Dict[str, Any]:
+        logger.info(f"Waiting for process {self.pid} to complete")
+        start_time = time.time()
 
-    async def _is_process_complete(self) -> bool:
-        cmd = f"[ -f {self.exit_code_file} ] && echo 'complete' || echo 'incomplete'"
-        result, _ = await self.process.sandbox.communicate(cmd)
-        result = result.strip()  # Remove any leading/trailing whitespace
-        logger.info(f"Process {self.pid} result: '{result}'")
-        is_complete = result == "complete"
-        logger.info(f"Process {self.pid} completion status: {is_complete}")
-        return is_complete
-
-    async def is_running(self) -> bool:
-        status = await self._get_process_status()
-        is_running = status != "" and status != "Z"
-        logger.info(
-            f"Process {self.pid} running status: {is_running} (status: '{status}')"
-        )
-        return is_running
-
-    async def get_result(self) -> Dict[str, Any]:
-        logger.info(f"Getting result for process {self.pid}")
-        while not await self._is_process_complete():
+        while True:
+            if await self._is_process_complete():
+                logger.debug(f"Process {self.pid} completed")
+                break
+            if timeout and (time.time() - start_time) > timeout:
+                logger.warning(f"Process {self.pid} timed out after {timeout} seconds")
+                raise TimeoutError(
+                    f"Process {self.pid} did not complete within the specified timeout."
+                )
             await asyncio.sleep(0.1)
 
-        output, _ = await self.process.sandbox.communicate(f"cat {self.output_file}")
-        exit_code_str, _ = await self.process.sandbox.communicate(
-            f"cat {self.exit_code_file}"
-        )
-
-        logger.info(
-            f"Process {self.pid} result. Output: {output}, Exit code string: {exit_code_str}"
-        )
-
-        try:
-            exit_code = int(exit_code_str.strip())
-        except ValueError:
-            logger.warning(f"Could not parse exit code for process {self.pid}")
-            exit_code = None
-
-        self.output["stdout"] = output.strip()
-        return {"stdout": output.strip(), "exit_code": exit_code}
+        result = await self.get_result()
+        if self.on_exit:
+            logger.debug(f"Calling on_exit callback for process {self.pid}")
+            self.on_exit(result["exit_code"])
+        return result
 
     async def kill(self):
         logger.info(f"Attempting to kill process {self.pid}")
@@ -241,43 +215,73 @@ class RunningProcess:
         # as it's no longer running and will be cleaned up by the system
         return
 
-    async def wait(self, timeout: Optional[int] = None) -> Dict[str, Any]:
-        logger.info(f"Waiting for process {self.pid} to complete")
-        start_time = time.time()
-
-        while True:
-            if await self._is_process_complete():
-                logger.debug(f"Process {self.pid} completed")
-                break
-            if timeout and (time.time() - start_time) > timeout:
-                logger.warning(f"Process {self.pid} timed out after {timeout} seconds")
-                raise TimeoutError(
-                    f"Process {self.pid} did not complete within the specified timeout."
-                )
-            await asyncio.sleep(0.1)
-
-        result = await self.get_result()
-        if self.on_exit:
-            logger.debug(f"Calling on_exit callback for process {self.pid}")
-            self.on_exit(result["exit_code"])
-        return result
-
     async def send_stdin(self, input: str):
         logger.info(f"Sending stdin to process {self.pid}")
-        await self.process.sandbox.communicate(f"echo '{input}' >> {self.output_file}")
+        await self.process_manager.sandbox.communicate(
+            f"echo '{input}' >> {self.output_file}"
+        )
         logger.debug(f"Stdin sent to process {self.pid}: {input}")
+
+    async def is_running(self) -> bool:
+        status = await self._get_process_status()
+        is_running = status != "" and status != "Z"
+        logger.info(
+            f"Process {self.pid} running status: {is_running} (status: '{status}')"
+        )
+        return is_running
+
+    async def get_result(self) -> Dict[str, Any]:
+        logger.info(f"Getting result for process {self.pid}")
+        while not await self._is_process_complete():
+            await asyncio.sleep(0.1)
+
+        output, _ = await self.process_manager.sandbox.communicate(
+            f"cat {self.output_file}"
+        )
+        exit_code_str, _ = await self.process_manager.sandbox.communicate(
+            f"cat {self.exit_code_file}"
+        )
+
+        logger.info(
+            f"Process {self.pid} result. Output: {output}, Exit code string: {exit_code_str}"
+        )
+
+        try:
+            exit_code = int(exit_code_str.strip())
+        except ValueError:
+            logger.warning(f"Could not parse exit code for process {self.pid}")
+            exit_code = None
+
+        self.output["stdout"] = output.strip()
+        return {"stdout": output.strip(), "exit_code": exit_code}
+
+    async def _get_process_status(self) -> str:
+        cmd = f"ps -o stat= -p {self.pid}"
+        result, _ = await self.process_manager.sandbox.communicate(cmd)
+        status = result.strip()
+        logger.info(f"Process {self.pid} status: '{status}'")
+        return status
+
+    async def _is_process_complete(self) -> bool:
+        cmd = f"[ -f {self.exit_code_file} ] && echo 'complete' || echo 'incomplete'"
+        result, _ = await self.process_manager.sandbox.communicate(cmd)
+        result = result.strip()
+        logger.info(f"Process {self.pid} result: '{result}'")
+        is_complete = result == "complete"
+        logger.info(f"Process {self.pid} completion status: {is_complete}")
+        return is_complete
 
     async def _stream_output(self):
         logger.debug(f"Starting output streaming for process {self.pid}")
         last_size = 0
         completion_time = None
         while True:
-            current_size, _ = await self.process.sandbox.communicate(
+            current_size, _ = await self.process_manager.sandbox.communicate(
                 f"wc -c < {self.output_file}"
             )
             current_size = int(current_size)
             if current_size > last_size:
-                new_output, _ = await self.process.sandbox.communicate(
+                new_output, _ = await self.process_manager.sandbox.communicate(
                     f"tail -c +{last_size + 1} {self.output_file}"
                 )
                 logger.debug(f"New output for process {self.pid}: {new_output}")

@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from firebox.sandbox import Sandbox
+from firebox.docker_sandbox import Sandbox
 from firebox.models import SandboxConfig, ProcessMessage
 from firebox.config import config
 from firebox.logs import logger

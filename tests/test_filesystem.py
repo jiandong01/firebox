@@ -1,7 +1,7 @@
 import pytest
 import asyncio
 import os
-from firebox.sandbox import Sandbox
+from firebox.docker_sandbox import Sandbox
 from firebox.models import SandboxConfig
 from firebox.filesystem import Filesystem
 from firebox.config import config
