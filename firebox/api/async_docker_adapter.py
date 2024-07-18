@@ -2,10 +2,12 @@
 
 import asyncio
 import aiodocker
+from aiodocker.stream import Stream
+
 import tarfile
 import io
 import os
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from datetime import datetime
 from firebox.api.models import (
     Sandbox,
@@ -104,7 +106,27 @@ class AsyncDockerAdapter:
                     "CapDrop": ["ALL"],
                     "CapAdd": new_sandbox.capabilities or [],
                 },
+                "Tty": new_sandbox.tty,
             }
+
+            if new_sandbox.entrypoint:
+                container_config["Entrypoint"] = (
+                    new_sandbox.entrypoint
+                    if isinstance(new_sandbox.entrypoint, list)
+                    else ["/bin/sh", "-c", new_sandbox.entrypoint]
+                )
+
+            if new_sandbox.cmd:
+                container_config["Cmd"] = (
+                    new_sandbox.cmd
+                    if isinstance(new_sandbox.cmd, list)
+                    else ["/bin/sh", "-c", new_sandbox.cmd]
+                )
+
+            if new_sandbox.keep_alive and not (
+                new_sandbox.entrypoint or new_sandbox.cmd
+            ):
+                container_config["Entrypoint"] = ["/bin/sh", "-c", "tail -f /dev/null"]
 
             if new_sandbox.ports:
                 container_config["ExposedPorts"] = {
@@ -121,8 +143,24 @@ class AsyncDockerAdapter:
                     for host, container in new_sandbox.volumes.items()
                 ]
 
+            logger.info(f"Creating container with config: {container_config}")
             container = await client.containers.create(config=container_config)
+            logger.info(f"Container created with ID: {container.id}")
             await container.start()
+            logger.info(f"Container started")
+
+            if new_sandbox.keep_alive:
+                # Wait for the container to be in running state
+                max_retries = 5
+                for _ in range(max_retries):
+                    info = await container.show()
+                    if info["State"]["Status"] == "running":
+                        break
+                    await asyncio.sleep(1)
+                else:
+                    raise SandboxCreationError(
+                        "Container failed to enter running state"
+                    )
 
             return Sandbox(
                 template_id=new_sandbox.template_id,
@@ -192,6 +230,47 @@ class AsyncDockerAdapter:
         # For Docker, we don't need to refresh. This method can be a no-op.
         pass
 
+    # Execute Command
+    async def exec_command(
+        self, sandbox_id: str, cmd: str, user: str = "root"
+    ) -> Dict[str, Any]:
+        try:
+            client = await self._get_client()
+            container = await client.containers.get(sandbox_id)
+
+            logger.debug(f"Executing command in container {sandbox_id}: {cmd}")
+
+            # Create an exec instance
+            exec_id = await container.exec(
+                cmd,
+                stdout=True,
+                stderr=True,
+                stdin=False,
+                tty=False,
+                privileged=False,
+                user=user,
+                environment=None,
+                workdir=None,
+                detach_keys=None,
+            )
+
+            # Start the exec instance
+            stream = exec_id.start()
+
+            # Read the output
+            output = await stream.read()
+
+            # Get the exit code
+            inspect_result = await exec_id.inspect()
+
+            return {
+                "exit_code": inspect_result["ExitCode"],
+                "output": output.decode("utf-8").strip(),
+            }
+        except aiodocker.exceptions.DockerError as e:
+            logger.error(f"Docker error during exec_command: {str(e)}")
+            raise DockerOperationError(f"Failed to execute command: {str(e)}")
+
     # File Upload/Download
 
     async def upload_file(
@@ -238,17 +317,12 @@ class AsyncDockerAdapter:
 
     async def list_files(self, sandbox_id: str, path: str) -> List[Dict[str, str]]:
         try:
-            container = await self.client.containers.get(sandbox_id)
+            result = await self.exec_command(sandbox_id, f"ls -la {path}")
 
-            # Use exec to list directory contents
-            exec_result = await container.exec(cmd=f"ls -la {path}", user="root")
+            if result["exit_code"] != 0:
+                raise DockerOperationError(f"Failed to list files: {result['output']}")
 
-            if exec_result.exit_code != 0:
-                raise DockerOperationError(
-                    f"Failed to list files: {exec_result.output.decode()}"
-                )
-
-            output_str = exec_result.output.decode("utf-8")
+            output_str = result["output"]
             logger.debug(f"ls -la output: {output_str}")
 
             files = []
@@ -266,7 +340,7 @@ class AsyncDockerAdapter:
                         files.append(file_info)
 
             return files
-        except aiodocker.exceptions.DockerError as e:
+        except DockerOperationError as e:
             raise DockerOperationError(f"Failed to list files: {str(e)}")
 
     # Network Management

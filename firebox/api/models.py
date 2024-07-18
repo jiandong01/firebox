@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Union
 from datetime import datetime
 
 
@@ -29,6 +29,17 @@ class NewSandbox(BaseModel):
     )
     build_args: Optional[Dict[str, str]] = Field(
         None, description="Build arguments for custom images"
+    )
+    entrypoint: Optional[Union[str, List[str]]] = Field(
+        None, description="Entrypoint for the container"
+    )
+    cmd: Optional[Union[str, List[str]]] = Field(
+        None, description="Command to run in the container"
+    )
+    tty: bool = Field(False, description="Allocate a pseudo-TTY")
+    keep_alive: bool = Field(
+        True,
+        description="Whether to keep the container running after entrypoint/cmd execution",
     )
 
 
