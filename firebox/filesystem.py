@@ -4,12 +4,13 @@ from typing import List, Union, Callable
 import base64
 from .config import config
 from .logs import logger
+from .watcher import Watcher
 
 
 class Filesystem:
     def __init__(self, sandbox):
         self.sandbox = sandbox
-        self.persistent_root = config.persistent_storage_path
+        self.persistent_root = getattr(config, "persistent_storage_path", "/home/user")
 
     async def upload_file(self, local_path: str, remote_path: str):
         logger.info(f"Uploading file from {local_path} to {remote_path}")
@@ -173,40 +174,43 @@ class Filesystem:
         except ValueError:
             raise OSError(f"Unexpected output when getting size of: {full_path}")
 
-    async def watch_dir(self, path: str, callback):
-        logger.info(f"Starting to watch directory: {path}")
-        full_path = os.path.join(self.persistent_root, path.lstrip("/"))
-        logger.debug(f"Full path to watch: {full_path}")
+    def watch_dir(self, path: str) -> Watcher:
+        return Watcher(self, path)
 
-        # Ensure the directory exists
-        if not await self.exists(path):
-            logger.info(f"Directory {path} does not exist. Creating it.")
-            await self.make_dir(path)
+    # async def watch_dir(self, path: str, callback):
+    #     logger.info(f"Starting to watch directory: {path}")
+    #     full_path = os.path.join(self.persistent_root, path.lstrip("/"))
+    #     logger.debug(f"Full path to watch: {full_path}")
 
-        initial_files = set(await self.list(path))
-        logger.info(f"Initial files in {path}: {initial_files}")
+    #     # Ensure the directory exists
+    #     if not await self.exists(path):
+    #         logger.info(f"Directory {path} does not exist. Creating it.")
+    #         await self.make_dir(path)
 
-        try:
-            while True:
-                await asyncio.sleep(1)
-                logger.debug(f"Checking for changes in {path}")
-                current_files = set(await self.list(path))
+    #     initial_files = set(await self.list(path))
+    #     logger.info(f"Initial files in {path}: {initial_files}")
 
-                # Check for new files
-                new_files = current_files - initial_files
-                for file in new_files:
-                    logger.info(f"New file detected: {file}")
-                    await callback("created", os.path.join(path, file))
+    #     try:
+    #         while True:
+    #             await asyncio.sleep(1)
+    #             logger.debug(f"Checking for changes in {path}")
+    #             current_files = set(await self.list(path))
 
-                # Check for deleted files
-                deleted_files = initial_files - current_files
-                for file in deleted_files:
-                    logger.info(f"File deleted: {file}")
-                    await callback("deleted", os.path.join(path, file))
+    #             # Check for new files
+    #             new_files = current_files - initial_files
+    #             for file in new_files:
+    #                 logger.info(f"New file detected: {file}")
+    #                 await callback("created", os.path.join(path, file))
 
-                if new_files or deleted_files:
-                    logger.info(f"Updated file list: {current_files}")
+    #             # Check for deleted files
+    #             deleted_files = initial_files - current_files
+    #             for file in deleted_files:
+    #                 logger.info(f"File deleted: {file}")
+    #                 await callback("deleted", os.path.join(path, file))
 
-                initial_files = current_files
-        except asyncio.CancelledError:
-            logger.info(f"Stopped watching directory: {path}")
+    #             if new_files or deleted_files:
+    #                 logger.info(f"Updated file list: {current_files}")
+
+    #             initial_files = current_files
+    #     except asyncio.CancelledError:
+    #         logger.info(f"Stopped watching directory: {path}")
