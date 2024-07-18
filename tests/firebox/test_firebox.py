@@ -77,7 +77,7 @@ async def sandbox(sandbox_config):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_init(sandbox):
+async def test_firebox_init(sandbox):
     logger.info(f"Testing sandbox initialization with ID: {sandbox.id}")
     assert sandbox.id is not None
     assert sandbox.container is not None
@@ -85,7 +85,7 @@ async def test_sandbox_init(sandbox):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_communicate(sandbox):
+async def test_firebox_communicate(sandbox):
     logger.info(f"Testing sandbox communication with ID: {sandbox.id}")
     result, exit_code = await sandbox.communicate("echo 'Hello, Sandbox!'")
     assert result.strip() == "Hello, Sandbox!"
@@ -93,7 +93,7 @@ async def test_sandbox_communicate(sandbox):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_reconnect(sandbox_config):
+async def test_firebox_reconnect(sandbox_config):
     logger.info("Testing sandbox reconnection")
     original_sandbox = Sandbox(sandbox_config)
     await original_sandbox.init()
@@ -109,7 +109,7 @@ async def test_sandbox_reconnect(sandbox_config):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_metadata(sandbox_config):
+async def test_firebox_metadata(sandbox_config):
     logger.info("Testing sandbox metadata")
     sandbox_config.metadata = {"key": "value"}
     sandbox = Sandbox(sandbox_config)
@@ -121,7 +121,7 @@ async def test_sandbox_metadata(sandbox_config):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_env_vars(sandbox):
+async def test_firebox_env_vars(sandbox):
     logger.info("Testing sandbox environment variables")
     result, exit_code = await sandbox.communicate("echo $TEST_ENV")
     assert result.strip() == "test_value"
@@ -129,14 +129,14 @@ async def test_sandbox_env_vars(sandbox):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_timeout(sandbox):
+async def test_firebox_timeout(sandbox):
     logger.info(f"Testing sandbox timeout with ID: {sandbox.id}")
     with pytest.raises(TimeoutError):
         await sandbox.communicate("sleep 10", timeout=1)
 
 
 @pytest.mark.asyncio
-async def test_sandbox_with_existing_id(sandbox_config):
+async def test_firebox_with_existing_id(sandbox_config):
     logger.info("Testing sandbox with existing ID")
     existing_id = "test-existing-id"
     sandbox_config.sandbox_id = existing_id
@@ -150,7 +150,7 @@ async def test_sandbox_with_existing_id(sandbox_config):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_cwd(sandbox):
+async def test_firebox_cwd(sandbox):
     logger.info("Testing sandbox current working directory")
     result, exit_code = await sandbox.communicate("pwd")
     assert result.strip() == "/home/user"
@@ -163,21 +163,21 @@ async def test_sandbox_cwd(sandbox):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_volume(sandbox):
+async def test_firebox_volume(sandbox):
     logger.info("Testing sandbox volume mounting")
     result, exit_code = await sandbox.communicate("ls /host_tmp")
     assert exit_code == 0
 
 
 @pytest.mark.asyncio
-async def test_sandbox_keep_alive(sandbox):
+async def test_firebox_keep_alive(sandbox):
     logger.info("Testing sandbox keep alive")
     await sandbox.keep_alive(5000)  # Keep alive for 5 seconds
     assert sandbox.container.status == "running"
 
 
 @pytest.mark.asyncio
-async def test_sandbox_list(sandbox):
+async def test_firebox_list(sandbox):
     logger.info("Testing sandbox list")
     sandboxes = await Sandbox.list()
     assert len(sandboxes) > 0
@@ -185,7 +185,7 @@ async def test_sandbox_list(sandbox):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_cleanup(docker_client, sandbox_config):
+async def test_firebox_cleanup(docker_client, sandbox_config):
     logger.info("Testing sandbox cleanup")
     sandbox = Sandbox(sandbox_config)
     await sandbox.init()
