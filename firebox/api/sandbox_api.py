@@ -103,6 +103,10 @@ class SandboxesApi:
         docker_adapter = await self._get_docker_adapter()
         return await docker_adapter.get_sandbox_stats(sandbox_id)
 
+    async def get_container_info(self, sandbox_id: str):
+        docker_adapter = await self._get_docker_adapter()
+        return await docker_adapter.get_container_info(sandbox_id)
+
     async def close(self):
         logger.info("Closing SandboxesApi")
         await self.docker_adapter.close()

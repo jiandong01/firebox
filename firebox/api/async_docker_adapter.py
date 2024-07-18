@@ -83,12 +83,14 @@ class AsyncDockerAdapter:
             # If a Dockerfile is provided, build the image first
             if new_sandbox.dockerfile:
                 image_tag = f"firebox-custom-{new_sandbox.template_id}"
-                new_sandbox.template_id = await self.build_image(
+                image_id = await self.build_image(
                     new_sandbox.dockerfile, image_tag, new_sandbox.build_args
                 )
+            else:
+                image_id = new_sandbox.template_id
 
             container_config = {
-                "Image": new_sandbox.template_id,
+                "Image": image_id,
                 "Env": [f"{k}={v}" for k, v in (new_sandbox.metadata or {}).items()],
                 "HostConfig": {
                     "CpuCount": new_sandbox.cpu_count,
@@ -97,19 +99,27 @@ class AsyncDockerAdapter:
                         if new_sandbox.memory_mb
                         else None
                     ),
-                    "Binds": [
-                        f"{host}:{container}"
-                        for host, container in (new_sandbox.volumes or {}).items()
-                    ],
-                    "PortBindings": {
-                        f"{container}/tcp": [{"HostPort": str(host)}]
-                        for container, host in (new_sandbox.ports or {}).items()
-                    },
+                    "PublishAllPorts": True,
                     "SecurityOpt": ["no-new-privileges:true"],
                     "CapDrop": ["ALL"],
                     "CapAdd": new_sandbox.capabilities or [],
                 },
             }
+
+            if new_sandbox.ports:
+                container_config["ExposedPorts"] = {
+                    f"{port}/tcp": {} for port in new_sandbox.ports.values()
+                }
+                container_config["HostConfig"]["PortBindings"] = {
+                    f"{container}/tcp": [{"HostPort": str(host)}]
+                    for host, container in new_sandbox.ports.items()
+                }
+
+            if new_sandbox.volumes:
+                container_config["HostConfig"]["Binds"] = [
+                    f"{host}:{container}"
+                    for host, container in new_sandbox.volumes.items()
+                ]
 
             container = await client.containers.create(config=container_config)
             await container.start()
@@ -167,7 +177,10 @@ class AsyncDockerAdapter:
         try:
             container = await self.client.containers.get(sandbox_id)
             logs = await container.log(
-                stdout=True, stderr=True, since=start, tail=limit
+                stdout=True,
+                stderr=True,
+                since=0 if start is None else start,  # Use 0 if start is None
+                tail=limit,
             )
             return "".join(logs)
         except aiodocker.exceptions.DockerError as e:
@@ -181,39 +194,80 @@ class AsyncDockerAdapter:
 
     # File Upload/Download
 
-    async def upload_file(self, sandbox_id: str, local_path: str, container_path: str):
-        try:
-            container = await self.client.containers.get(sandbox_id)
-
-            # Create a tar archive of the file
-            tar_buffer = io.BytesIO()
-            with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
-                tar.add(local_path, arcname=os.path.basename(container_path))
-
-            tar_buffer.seek(0)
-            await container.put_archive(os.path.dirname(container_path), tar_buffer)
-        except aiodocker.exceptions.DockerError as e:
-            raise DockerOperationError(f"Failed to upload file: {str(e)}")
-
-    async def download_file(
-        self, sandbox_id: str, container_path: str, local_path: str
+    async def upload_file(
+        self, sandbox_id: str, file_content: bytes, container_path: str
     ):
         try:
             container = await self.client.containers.get(sandbox_id)
 
-            tar_data, _ = await container.get_archive(container_path)
-
+            # Create a tar archive containing the file
             tar_buffer = io.BytesIO()
-            async for chunk in tar_data:
-                tar_buffer.write(chunk)
+            with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
+                file_data = io.BytesIO(file_content)
+                tarinfo = tarfile.TarInfo(name=os.path.basename(container_path))
+                tarinfo.size = len(file_content)
+                tar.addfile(tarinfo, file_data)
+
             tar_buffer.seek(0)
+            await container.put_archive(os.path.dirname(container_path), tar_buffer)
+
+            logger.debug(f"File uploaded to {container_path}")
+
+        except aiodocker.exceptions.DockerError as e:
+            raise DockerOperationError(f"Failed to upload file: {str(e)}")
+
+    async def download_file(self, sandbox_id: str, container_path: str) -> bytes:
+        try:
+            container = await self.client.containers.get(sandbox_id)
+
+            tar_stream, _ = await container.get_archive(container_path)
+
+            tar_content = await tar_stream.read()
+            tar_buffer = io.BytesIO(tar_content)
 
             with tarfile.open(fileobj=tar_buffer, mode="r") as tar:
-                file_data = tar.extractfile(os.path.basename(container_path))
-                with open(local_path, "wb") as f:
-                    f.write(file_data.read())
+                file = tar.extractfile(os.path.basename(container_path))
+                if file is None:
+                    raise ValueError(
+                        f"Failed to extract file {container_path} from archive"
+                    )
+                return file.read()
+
         except aiodocker.exceptions.DockerError as e:
             raise DockerOperationError(f"Failed to download file: {str(e)}")
+
+    async def list_files(self, sandbox_id: str, path: str) -> List[Dict[str, str]]:
+        try:
+            container = await self.client.containers.get(sandbox_id)
+
+            # Use exec to list directory contents
+            exec_result = await container.exec(cmd=f"ls -la {path}", user="root")
+
+            if exec_result.exit_code != 0:
+                raise DockerOperationError(
+                    f"Failed to list files: {exec_result.output.decode()}"
+                )
+
+            output_str = exec_result.output.decode("utf-8")
+            logger.debug(f"ls -la output: {output_str}")
+
+            files = []
+            for line in output_str.split("\n")[1:]:  # Skip the first line (total)
+                if line.strip():
+                    parts = line.split(None, 8)
+                    if len(parts) >= 9:
+                        file_info = {
+                            "name": parts[8],
+                            "type": "directory" if parts[0].startswith("d") else "file",
+                            "size": parts[4],
+                            "permissions": parts[0],
+                        }
+                        logger.debug(f"File info: {file_info}")
+                        files.append(file_info)
+
+            return files
+        except aiodocker.exceptions.DockerError as e:
+            raise DockerOperationError(f"Failed to list files: {str(e)}")
 
     # Network Management
 
@@ -314,6 +368,11 @@ class AsyncDockerAdapter:
             }
         except aiodocker.exceptions.DockerError as e:
             raise DockerOperationError(f"Failed to get sandbox stats: {str(e)}")
+
+    async def get_container_info(self, sandbox_id: str):
+        container = await self.client.containers.get(sandbox_id)
+        info = await container.show()
+        return info
 
     # Close
 
