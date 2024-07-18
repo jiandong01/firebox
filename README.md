@@ -48,6 +48,7 @@ asyncio.run(main())
 ## Features
 
 - Secure execution environment
+- Persistent storage with automatic mounting
 - File system operations
 - Process management
 - Environment variable control
@@ -64,13 +65,16 @@ asyncio.run(main())
 from firebox import Sandbox, SandboxConfig
 
 config = SandboxConfig(
-    image="fireenv-sandbox:latest",
+    image="kalilinux/kali-rolling",
     cpu=1,
-    memory="1g",
+    memory="2g",
     environment={"TEST_ENV": "test_value"},
+    persistent_storage_path="./sandbox_data",
+    cwd="/sandbox"
 )
 
-sandbox = await Sandbox.create(config)
+sandbox = Sandbox(config)
+await sandbox.init()
 ```
 
 #### Executing Commands
@@ -90,19 +94,19 @@ await sandbox.close()
 #### Writing Files
 
 ```python
-await sandbox.filesystem.write("/tmp/test.txt", "Hello, Firebox!")
+await sandbox.filesystem.write("test.txt", "Hello, Firebox!")
 ```
 
 #### Reading Files
 
 ```python
-content = await sandbox.filesystem.read("/tmp/test.txt")
+content = await sandbox.filesystem.read("test.txt")
 ```
 
 #### Listing Directory Contents
 
 ```python
-files = await sandbox.filesystem.list("/tmp")
+files = await sandbox.filesystem.list(".")
 ```
 
 ### Process
@@ -135,8 +139,11 @@ You can use custom Docker images by specifying them in the `SandboxConfig`:
 config = SandboxConfig(
     dockerfile="/path/to/Dockerfile",
     dockerfile_context="/path/to/context",
+    persistent_storage_path="./sandbox_data",
+    cwd="/sandbox"
 )
-sandbox = await Sandbox.create(config)
+sandbox = Sandbox(config)
+await sandbox.init()
 ```
 
 ### Watching for File Changes
@@ -145,7 +152,7 @@ sandbox = await Sandbox.create(config)
 def on_file_change(event):
     print(f"File changed: {event['path']}")
 
-watcher = sandbox.filesystem.watch_dir("/tmp")
+watcher = sandbox.filesystem.watch_dir(".")
 watcher.add_event_listener(on_file_change)
 watcher.start()
 ```
@@ -157,7 +164,7 @@ Firebox can be configured using a YAML file. Create a `firebox_config.yaml` file
 ```yaml
 sandbox_image: "fireenv-sandbox:latest"
 container_prefix: "fireenv-sandbox"
-persistent_storage_path: "/persistent"
+persistent_storage_path: "./sandbox_data"
 cpu: 1
 memory: "1g"
 timeout: 30
@@ -170,4 +177,4 @@ We welcome contributions to Firebox! Please see our [Contributing Guide](CONTRIB
 
 ## License
 
-Firebox is released under the [MIT License](LICENSE).
+Firebox is released under the MIT License.
