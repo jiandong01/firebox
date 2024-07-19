@@ -46,6 +46,8 @@ class DockerSandbox:
                         "mode": "rw",
                     }
                 }
+                if self.config.volumes:
+                    volumes.update(self.config.volumes)
                 container_config = {
                     "image": self.config.image,
                     "name": f"{config.container_prefix}_{self.id}",

@@ -83,7 +83,7 @@ class Sandbox:
         :param timeout: Timeout for sandbox to initialize in seconds, default is 60 seconds.
         :param domain: The domain to use for the API.
         """
-        self.cwd = cwd or "/home/user"
+        self.cwd = cwd or "/sandbox"
         self.env_vars = env_vars or {}
         self.domain = domain
 

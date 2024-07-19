@@ -11,12 +11,12 @@ class FireboxConfig(BaseSettings):
     )
 
     sandbox_image: str = Field(
-        default="fireenv-sandbox:latest",
+        default="firebox-sandbox:latest",
         description="Docker image for the sandbox",
         json_schema_extra={"env": "FIREBOX_SANDBOX_IMAGE"},
     )
     container_prefix: str = Field(
-        default="fireenv-sandbox",
+        default="firebox-sandbox",
         description="Prefix for container names",
         json_schema_extra={"env": "FIREBOX_CONTAINER_PREFIX"},
     )

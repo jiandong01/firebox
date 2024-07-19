@@ -7,7 +7,7 @@ class DockerSandboxConfig(BaseModel):
         default=None, description="Unique identifier for the sandbox"
     )
     image: str = Field(
-        default="fireenv-sandbox:latest",
+        default="firebox-sandbox:latest",
         description="Docker image name for the sandbox",
     )
     dockerfile: Optional[str] = Field(

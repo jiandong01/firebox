@@ -1,5 +1,5 @@
-sandbox_image: "fireenv-sandbox:latest"
-container_prefix: "fireenv-sandbox"
+sandbox_image: "firebox-sandbox:latest"
+container_prefix: "firebox-sandbox"
 persistent_storage_path: "/persistent"
 cpu: 1
 memory: "1g"

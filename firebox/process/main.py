@@ -1,5 +1,6 @@
 import asyncio
 import time
+import shlex
 from typing import Dict, Optional, Any, List, Callable, Union
 
 from ..exception import ProcessException, TimeoutException
@@ -91,9 +92,12 @@ class Process:
     async def _run(self):
         try:
             env_vars_str = " ".join(
-                f"export {k}='{v}';" for k, v in self._env_vars.items()
+                f"{k}={shlex.quote(v)}" for k, v in self._env_vars.items()
             )
-            full_cmd = f"bash -c '{env_vars_str} cd {self._cwd} && {self._cmd}'"
+            escaped_cmd = shlex.quote(self._cmd)
+            full_cmd = f"bash -c {shlex.quote(f'set -e; {env_vars_str}; cd {self._cwd} && {self._cmd}')}"
+
+            logger.debug(f"Executing command: {full_cmd}")
             exit_code, output = await self._sandbox.communicate(full_cmd)
 
             lines = output.splitlines()
@@ -211,16 +215,7 @@ class ProcessManager:
         self, timeout: Optional[float] = TIMEOUT
     ) -> List[RunningProcess]:
         try:
-            cmd = (
-                "for pid in /proc/[0-9]*; do "
-                "    pid=${pid##*/}; "
-                "    cmd=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\\0' ' '); "
-                "    stat=$(cat /proc/$pid/stat 2>/dev/null); "
-                '    if [ ! -z "$cmd" ] && [ ! -z "$stat" ]; then '
-                "        echo $pid \"$cmd\" $(echo $stat | awk '{print $3}'); "
-                "    fi; "
-                "done"
-            )
+            cmd = "ps -eo pid,state,cmd --no-headers"
             exit_code, output = await self._sandbox.communicate(cmd, timeout=timeout)
 
             if exit_code != 0:
@@ -231,14 +226,16 @@ class ProcessManager:
                 parts = line.split(None, 2)
                 if len(parts) < 3:
                     continue
-                pid, cmd, status = parts
+                pid, state, cmd = parts
                 processes.append(
                     RunningProcess(
                         pid=int(pid),
                         cmd=cmd.strip(),
-                        status=status,
+                        status=state.strip(),
                     )
                 )
+
+            logger.debug(f"Found processes: {processes}")
             return processes
         except Exception as e:
             raise ProcessException(f"Failed to list processes: {str(e)}") from e

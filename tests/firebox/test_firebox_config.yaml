@@ -1,10 +1,10 @@
 # Firebox Configuration
 
 # Docker image for the sandbox
-sandbox_image: "fireenv-sandbox:latest"
+sandbox_image: "firebox-sandbox:latest"
 
 # Prefix for container names
-container_prefix: "fireenv-sandbox"
+container_prefix: "firebox-sandbox"
 
 # Path for persistent storage in the sandbox
 persistent_storage_path: "/tmp/persistent"

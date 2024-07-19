@@ -39,7 +39,7 @@ async def sandbox(sandbox_config):
 async def test_process_start(sandbox):
     logger.info("Starting test_process_start")
     process = await sandbox.process.start("echo 'Hello, World!'")
-    logger.info(f"Process started with ID: {process.process_id}")
+    logger.info(f"Process started with ID: {process._process_id}")
 
     logger.info("Waiting for process to complete")
     result = await process.wait(timeout=5)
@@ -47,7 +47,7 @@ async def test_process_start(sandbox):
     assert "Hello, World!" in result.stdout
     assert result.exit_code == 0
 
-    assert process.finished.done(), "Process should be finished"
+    assert process._finished.done(), "Process should be finished"
 
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ async def test_process_send_stdin(sandbox):
         "cat",
         on_stdout=lambda msg: logger.info(f"Received output: {msg.line}"),
     )
-    logger.info(f"Started process with ID: {process.process_id}")
+    logger.info(f"Started process with ID: {process._process_id}")
 
     await process.send_stdin("AI Playground\n")
     logger.info("Sent 'AI Playground' to the process")
@@ -98,7 +98,7 @@ async def test_process_on_exit(sandbox):
         logger.info(f"Exit callback called with code: {code}")
 
     process = await sandbox.process.start("echo 'Test'", on_exit=on_exit)
-    logger.info(f"Started echo process with ID: {process.process_id}")
+    logger.info(f"Started echo process with ID: {process._process_id}")
 
     await process.wait()
     logger.info("Process completed")
@@ -111,9 +111,9 @@ async def test_process_on_exit(sandbox):
 async def test_multiple_processes(sandbox):
     logger.info("Starting test_multiple_processes")
     process1 = await sandbox.process.start("echo 'Process 1'")
-    logger.info(f"Started process 1 with ID: {process1.process_id}")
+    logger.info(f"Started process 1 with ID: {process1._process_id}")
     process2 = await sandbox.process.start("echo 'Process 2'")
-    logger.info(f"Started process 2 with ID: {process2.process_id}")
+    logger.info(f"Started process 2 with ID: {process2._process_id}")
 
     result1 = await process1.wait()
     logger.info(f"Process 1 completed. Result: {result1}")
@@ -136,7 +136,7 @@ async def test_process_stream_output(sandbox):
     process = await sandbox.process.start(
         "echo 'Line 1' && echo 'Line 2'", on_stdout=on_stdout
     )
-    logger.info(f"Started process with ID: {process.process_id}")
+    logger.info(f"Started process with ID: {process._process_id}")
 
     await process.wait()
     logger.info("Process completed")
@@ -151,16 +151,16 @@ async def test_process_stream_output(sandbox):
 async def test_process_kill(sandbox):
     logger.info("Starting test_process_kill")
     process = await sandbox.process.start("sleep 10")
-    logger.info(f"Started sleep process with ID: {process.process_id}")
+    logger.info(f"Started sleep process with ID: {process._process_id}")
     await asyncio.sleep(0.5)  # Give some time for the process to start
 
-    assert not process.finished.done(), "Process should be running before kill"
+    assert not process._finished.done(), "Process should be running before kill"
 
     await process.kill()
     logger.info("Sent kill signal to the process")
     await asyncio.sleep(0.5)  # Give some time for the process to be killed
 
-    assert process.finished.done(), "Process should be finished after kill"
+    assert process._finished.done(), "Process should be finished after kill"
 
 
 @pytest.mark.asyncio
@@ -168,7 +168,7 @@ async def test_process_timeout(sandbox):
     logger.info("Starting test_process_timeout")
     with pytest.raises(TimeoutException):
         process = await sandbox.process.start("sleep 10")
-        logger.info(f"Started sleep process with ID: {process.process_id}")
+        logger.info(f"Started sleep process with ID: {process._process_id}")
         logger.info("Process started, waiting with timeout")
         await process.wait(timeout=2)
     logger.info("TimeoutException raised as expected")
@@ -178,15 +178,15 @@ async def test_process_timeout(sandbox):
 async def test_long_running_process(sandbox):
     logger.info("Starting test_long_running_process")
     process = await sandbox.process.start("sleep 2 && echo 'Done'")
-    logger.info(f"Started process with ID: {process.process_id}")
+    logger.info(f"Started process with ID: {process._process_id}")
 
     assert (
-        not process.finished.done()
+        not process._finished.done()
     ), "Process should be running immediately after start"
 
     logger.info("Waiting for 3 seconds")
     await asyncio.sleep(3)
-    assert process.finished.done(), "Process should be finished after sleep"
+    assert process._finished.done(), "Process should be finished after sleep"
 
     result = await process.wait()
     logger.info(f"Process result: {result}")
@@ -218,7 +218,7 @@ async def test_list_processes(sandbox):
 
     # Start a long-running process
     long_process = await sandbox.process.start("sleep 10")
-    logger.info(f"Started long-running process with ID: {long_process.process_id}")
+    logger.info(f"Started long-running process with ID: {long_process._process_id}")
 
     # Wait a bit to ensure the process is running
     await asyncio.sleep(1)
@@ -228,12 +228,33 @@ async def test_list_processes(sandbox):
     logger.info(f"Listed processes: {processes}")
 
     # Check if our long-running process is in the list
-    assert any(
-        p.cmd.endswith("sleep 10") for p in processes
-    ), "Long-running process not found in process list"
+    sleep_process_found = any("sleep 10" in p.cmd for p in processes)
 
-    # Check if we have basic system processes
-    assert any("init" in p.cmd.lower() for p in processes), "Init process not found"
+    # Check for the main container process (usually 'tail -f /dev/null' or similar)
+    main_process_found = any("tail -f /dev/null" in p.cmd for p in processes)
+
+    if not sleep_process_found or not main_process_found:
+        logger.error(f"Expected processes not found. All processes: {processes}")
+        logger.error(
+            f"Long process details: ID={long_process._process_id}, PID={long_process._pid}"
+        )
+
+        # Get more details about the running processes
+        details = await sandbox.process.start_and_wait("ps aux")
+        logger.error(f"Detailed process list:\n{details.stdout}")
+
+        # Check if the sleep process is still running
+        is_running = await sandbox.process.start_and_wait(f"ps -p {long_process._pid}")
+        logger.error(
+            f"Is long process still running? Exit code: {is_running.exit_code}"
+        )
+
+    assert (
+        sleep_process_found
+    ), "Long-running process (sleep 10) not found in process list"
+    assert (
+        main_process_found
+    ), "Main container process (tail -f /dev/null) not found in process list"
 
     # Kill the long-running process
     await long_process.kill()

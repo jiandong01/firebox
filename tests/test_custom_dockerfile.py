@@ -46,7 +46,7 @@ async def test_custom_dockerfile_sandbox(custom_dockerfile, tmp_path):
         assert sandbox._docker_sandbox.container.status == "running"
 
         result = await sandbox.start_and_wait(
-            "python -c \"import requests; print('Test successful!')\""
+            "python -c 'import requests; print(\"Test successful!\")'"
         )
 
         assert result.exit_code == 0
@@ -80,7 +80,6 @@ async def test_custom_dockerfile_sandbox_with_volume(custom_dockerfile, tmp_path
         memory=config.memory,
         environment={"TEST_ENV": "test_value"},
         persistent_storage_path=str(persistent_storage_path),
-        volumes={str(persistent_storage_path): {"bind": "/sandbox", "mode": "rw"}},
         cwd="/sandbox",
     )
 

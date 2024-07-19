@@ -162,8 +162,8 @@ watcher.start()
 Firebox can be configured using a YAML file. Create a `firebox_config.yaml` file in your project directory:
 
 ```yaml
-sandbox_image: "fireenv-sandbox:latest"
-container_prefix: "fireenv-sandbox"
+sandbox_image: "firebox-sandbox:latest"
+container_prefix: "firebox-sandbox"
 persistent_storage_path: "./sandbox_data"
 cpu: 1
 memory: "1g"
