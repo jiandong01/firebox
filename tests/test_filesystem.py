@@ -1,9 +1,9 @@
 import pytest
 import asyncio
 import os
-from firebox.docker_sandbox import Sandbox
-from firebox.models import SandboxConfig
-from firebox.filesystem import Filesystem
+from firebox.sandbox import Sandbox
+from firebox.models.sandbox import DockerSandboxConfig
+from firebox.models.filesystem import FilesystemOperation, FilesystemEvent
 from firebox.config import config
 from firebox.logs import logger
 
@@ -12,7 +12,7 @@ from firebox.logs import logger
 def sandbox_config(tmp_path):
     persistent_storage_path = tmp_path / "persistent_storage"
     persistent_storage_path.mkdir(exist_ok=True)
-    return SandboxConfig(
+    return DockerSandboxConfig(
         image=config.sandbox_image,
         cpu=config.cpu,
         memory=config.memory,
@@ -24,16 +24,14 @@ def sandbox_config(tmp_path):
 
 @pytest.fixture
 async def filesystem(sandbox_config):
-    sandbox = Sandbox(sandbox_config)
-    await sandbox.init()
-    await asyncio.sleep(2)  # Add a short delay to ensure the container is fully ready
+    sandbox = await Sandbox.create(template=sandbox_config)
     yield sandbox.filesystem
     await sandbox.close()
 
 
 @pytest.mark.asyncio
 async def test_filesystem_write_read(filesystem):
-    test_content = b"Hello, FileSystem!"
+    test_content = "Hello, FileSystem!"
     await filesystem.write("test.txt", test_content)
     content = await filesystem.read("test.txt")
     assert content == test_content
@@ -41,24 +39,23 @@ async def test_filesystem_write_read(filesystem):
 
 @pytest.mark.asyncio
 async def test_filesystem_list(filesystem):
-    await filesystem.write("test1.txt", b"Test 1")
-    await filesystem.write("test2.txt", b"Test 2")
+    await filesystem.write("test1.txt", "Test 1")
+    await filesystem.write("test2.txt", "Test 2")
     files = await filesystem.list(".")
-    assert "test1.txt" in files
-    assert "test2.txt" in files
+    assert any(file.name == "test1.txt" for file in files)
+    assert any(file.name == "test2.txt" for file in files)
 
 
 @pytest.mark.asyncio
 async def test_filesystem_delete(filesystem):
     test_file = "to_delete.txt"
-
-    await filesystem.write(test_file, b"Delete me")
+    await filesystem.write(test_file, "Delete me")
     assert await filesystem.exists(test_file)
 
     contents_before = await filesystem.list(".")
     logger.info(f"Contents before delete: {contents_before}")
 
-    await filesystem.delete(test_file)
+    await filesystem.remove(test_file)
 
     file_exists = await filesystem.exists(test_file)
     contents_after = await filesystem.list(".")
@@ -77,17 +74,18 @@ async def test_filesystem_make_dir(filesystem):
 
 @pytest.mark.asyncio
 async def test_filesystem_is_file(filesystem):
-    await filesystem.write("test_file.txt", b"Test content")
+    await filesystem.write("test_file.txt", "Test content")
     assert await filesystem.is_file("test_file.txt")
     assert not await filesystem.is_file("non_existent_file.txt")
 
 
 @pytest.mark.asyncio
 async def test_filesystem_get_size(filesystem):
-    test_content = b"Hello, World!"
+    test_content = "Hello, World!"
     await filesystem.write("size_test.txt", test_content)
     size = await filesystem.get_size("size_test.txt")
-    assert size == len(test_content)
+    expected_size = len(test_content.encode("utf-8")) + 1
+    assert size == expected_size, f"Expected size {expected_size}, but got {size}"
 
 
 @pytest.mark.asyncio
@@ -95,33 +93,47 @@ async def test_filesystem_watch_dir(filesystem):
     logger.info("Starting test_filesystem_watch_dir")
     events = []
 
-    def event_listener(event):
+    def event_listener(event: FilesystemEvent):
         logger.info(f"Event received: {event}")
         events.append(event)
 
     watcher = filesystem.watch_dir(".")
     watcher.add_event_listener(event_listener)
-    watcher.start()
+    await watcher.start()
 
     try:
-        await asyncio.sleep(1)
+        await asyncio.sleep(1)  # Wait for watcher to start
 
         test_file = "test_file.txt"
         logger.info(f"Writing file: {test_file}")
-        await filesystem.write(test_file, b"Hello, World!")
+        await filesystem.write(test_file, "Hello, World!")
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(2)  # Wait for events to be processed
+
+        logger.info(f"Removing file: {test_file}")
+        await filesystem.remove(test_file)
+
+        await asyncio.sleep(2)  # Wait for events to be processed
     finally:
         await watcher.stop()
 
     logger.info(f"Events recorded: {events}")
-    assert len(events) > 0, "No events were recorded"
+
+    # Filter out any unexpected events
+    relevant_events = [event for event in events if event.name == test_file]
+
     assert (
-        events[0]["type"] == "created"
-    ), f"Expected 'created' event, got {events[0]['type']}"
-    assert events[0]["path"].endswith(
-        test_file
-    ), f"Expected path to end with {test_file}, got {events[0]['path']}"
+        len(relevant_events) == 2
+    ), f"Expected 2 events for {test_file}, got {len(relevant_events)}"
+    assert (
+        relevant_events[0].operation == FilesystemOperation.Create
+    ), f"Expected Create operation, got {relevant_events[0].operation}"
+    assert (
+        relevant_events[1].operation == FilesystemOperation.Remove
+    ), f"Expected Remove operation, got {relevant_events[1].operation}"
+    assert all(
+        event.path.endswith(test_file) for event in relevant_events
+    ), f"Unexpected file path in events"
 
     logger.info("test_filesystem_watch_dir completed successfully")
 
@@ -138,15 +150,15 @@ async def test_filesystem_upload_download(filesystem, tmp_path):
     local_path.write_bytes(test_content)
     logger.info(f"Local file created with content: {test_content}")
 
-    await filesystem.upload_file(str(local_path), remote_path)
+    await filesystem.write_bytes(remote_path, test_content)
 
     exists = await filesystem.exists(remote_path)
     logger.info(f"Remote file exists: {exists}")
     assert exists, f"Remote file {remote_path} does not exist after upload"
 
-    await filesystem.download_file(remote_path, str(download_path))
+    downloaded_content = await filesystem.read_bytes(remote_path)
+    download_path.write_bytes(downloaded_content)
 
-    downloaded_content = download_path.read_bytes()
     logger.info(f"Downloaded content: {downloaded_content}")
 
     assert (

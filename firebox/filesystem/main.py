@@ -1,5 +1,4 @@
 import base64
-import logging
 from typing import List, Optional
 
 from firebox.constants import TIMEOUT
@@ -7,8 +6,7 @@ from firebox.exception import FilesystemException
 from firebox.utils.filesystem import resolve_path
 from firebox.filesystem.watcher import Watcher
 from firebox.models import FileInfo
-
-logger = logging.getLogger(__name__)
+from firebox.logs import logger
 
 
 class FilesystemManager:
@@ -260,7 +258,7 @@ class FilesystemManager:
         path = resolve_path(path, self.cwd)
         try:
             exit_code, output = await self._sandbox.communicate(
-                f"du -sb {path} | cut -f1", timeout=timeout
+                f"stat -c%s {path}", timeout=timeout
             )
             if exit_code != 0:
                 raise Exception(f"Failed to get size: {output}")

@@ -1,4 +1,3 @@
-import logging
 import docker
 import asyncio
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -13,9 +12,7 @@ from firebox.exception import (
     SandboxException,
 )
 from firebox.constants import TIMEOUT, DOMAIN
-
-
-logger = logging.getLogger(__name__)
+from firebox.logs import logger
 
 
 class Sandbox:

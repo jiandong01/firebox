@@ -1,13 +1,11 @@
 import asyncio
-import logging
 from typing import Any, Callable, ClassVar, List, Optional
 import json
 
 from firebox.models import OpenPort, CodeSnippet
 from firebox.exception import SandboxException
 from firebox.constants import TIMEOUT
-
-logger = logging.getLogger(__name__)
+from firebox.logs import logger
 
 
 ScanOpenedPortsHandler = Callable[[List[OpenPort]], Any]

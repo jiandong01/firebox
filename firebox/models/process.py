@@ -1,7 +1,48 @@
 from pydantic import BaseModel, Field
+from enum import Enum
 from typing import Dict, Optional, ClassVar, List
+from firebox.utils.str import snake_case_to_camel_case
 
 EnvVars = Dict[str, str]
+
+
+class ProcessEventType(str, Enum):
+    START = "start"
+    STOP = "stop"
+    EXIT = "exit"
+    SIGNAL = "signal"
+    STDOUT = "stdout"
+    STDERR = "stderr"
+
+
+class ProcessEvent(BaseModel):
+    pid: int
+    event_type: ProcessEventType
+    timestamp: int  # Unix timestamp in nanoseconds
+    exit_code: Optional[int] = None
+    signal: Optional[int] = None
+    data: Optional[str] = None  # For stdout/stderr events
+
+    class ConfigDict:
+        alias_generator = snake_case_to_camel_case  # Assuming you want to use this
+
+    def __str__(self):
+        if self.event_type == ProcessEventType.START:
+            return f"Process {self.pid} started at {self.timestamp}"
+        elif self.event_type == ProcessEventType.STOP:
+            return f"Process {self.pid} stopped at {self.timestamp}"
+        elif self.event_type == ProcessEventType.EXIT:
+            return f"Process {self.pid} exited with code {self.exit_code} at {self.timestamp}"
+        elif self.event_type == ProcessEventType.SIGNAL:
+            return (
+                f"Process {self.pid} received signal {self.signal} at {self.timestamp}"
+            )
+        elif self.event_type == ProcessEventType.STDOUT:
+            return f"Process {self.pid} stdout at {self.timestamp}: {self.data}"
+        elif self.event_type == ProcessEventType.STDERR:
+            return f"Process {self.pid} stderr at {self.timestamp}: {self.data}"
+        else:
+            return f"Unknown event for process {self.pid} at {self.timestamp}"
 
 
 class ProcessMessage(BaseModel):

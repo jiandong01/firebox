@@ -1,6 +1,5 @@
 import asyncio
 import time
-import logging
 from typing import Dict, Optional, Any, List, Callable, Union
 
 from ..exception import (
@@ -10,8 +9,7 @@ from ..exception import (
 )
 from ..models import EnvVars, ProcessMessage, ProcessOutput
 from ..constants import TIMEOUT
-
-logger = logging.getLogger(__name__)
+from ..logs import logger
 
 
 class Process:

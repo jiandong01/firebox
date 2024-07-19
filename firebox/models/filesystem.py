@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel
+from enum import Enum
+from firebox.utils.str import snake_case_to_camel_case
 
 
 class FileInfo(BaseModel):
@@ -7,12 +8,20 @@ class FileInfo(BaseModel):
     name: str
 
 
-class FileSystemOperation(BaseModel):
-    operation: str = Field(..., description="Type of filesystem operation")
-    path: str = Field(..., description="Path for the filesystem operation")
-    content: Optional[str] = Field(
-        default=None, description="Content for write operations"
-    )
-    timeout: int = Field(
-        default=30, description="Timeout for the filesystem operation in seconds"
-    )
+class FilesystemOperation(str, Enum):
+    Create = "Create"
+    Write = "Write"
+    Remove = "Remove"
+    Rename = "Rename"
+    Chmod = "Chmod"
+
+
+class FilesystemEvent(BaseModel):
+    path: str
+    name: str
+    operation: FilesystemOperation
+    timestamp: int
+    is_dir: bool
+
+    class ConfigDict:
+        alias_generator = snake_case_to_camel_case

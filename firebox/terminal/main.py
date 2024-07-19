@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import pty
 import os
 import fcntl
@@ -11,8 +10,7 @@ from firebox.constants import TIMEOUT
 from firebox.exception import TerminalException
 from firebox.models import EnvVars, TerminalOutput
 from firebox.utils.id import create_id
-
-logger = logging.getLogger(__name__)
+from firebox.logs import logger
 
 
 class Terminal:

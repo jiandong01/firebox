@@ -2,9 +2,9 @@ import os
 import asyncio
 import docker
 import uuid
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, Callable
 from docker.errors import APIError
-
+from firebox.subscriptions import SubscriptionHandler
 from firebox.models import DockerSandboxConfig, OpenPort
 from firebox.exception import SandboxException, TimeoutException
 from firebox.config import config
@@ -122,6 +122,19 @@ class DockerSandbox:
         ]
         for cmd in commands:
             await self.communicate(cmd)
+
+    async def _subscribe(
+        self,
+        service: str,
+        handler: Callable[[Any], None],
+        method: str,
+        *params,
+        timeout: Optional[float] = None,
+    ):
+        if method == "watchDir":
+            return await SubscriptionHandler.watch_directory(self, params[0], handler)
+        else:
+            raise NotImplementedError(f"Subscription method {method} not implemented")
 
     async def communicate(
         self, command: str, timeout: Optional[float] = None

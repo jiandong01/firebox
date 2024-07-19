@@ -1,8 +1,10 @@
 from .code_snippet import OpenPort, CodeSnippet
 from .config import FireboxConfig
-from .filesystem import FileInfo, FileSystemOperation
+from .filesystem import FileInfo, FilesystemOperation, FilesystemEvent
 from .process import (
     EnvVars,
+    ProcessEvent,
+    ProcessEventType,
     ProcessMessage,
     ProcessOutput,
     ProcessConfig,
@@ -16,8 +18,11 @@ __all__ = [
     "CodeSnippet",
     "FireboxConfig",
     "FileInfo",
-    "FileSystemOperation",
+    "FilesystemOperation",
+    "FilesystemEvent",
     "EnvVars",
+    "ProcessEvent",
+    "ProcessEventType",
     "ProcessMessage",
     "ProcessOutput",
     "ProcessConfig",
