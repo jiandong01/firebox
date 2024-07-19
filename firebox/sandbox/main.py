@@ -2,37 +2,60 @@ import logging
 import docker
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from firebox.docker_sandbox import DockerSandbox
-from firebox.filesystem.main import FilesystemManager
-from firebox.process.main import ProcessManager, ProcessMessage
-from firebox.terminal.main import TerminalManager
-from firebox.code_snippet.main import CodeSnippetManager, OpenPort
-from firebox.models.sandbox import DockerSandboxConfig, EnvVars
-from firebox.exceptions import SandboxException, TimeoutException
-from firebox.constants import TIMEOUT
+from .docker_sandbox import DockerSandbox
+from firebox.filesystem import FilesystemManager
+from firebox.process import ProcessManager, Process, ProcessMessage, ProcessOutput
+from firebox.terminal import TerminalManager
+from firebox.code_snippet import CodeSnippetManager, OpenPort
+from firebox.models import DockerSandboxConfig, EnvVars
+from firebox.exception import (
+    SandboxException,
+)
+from firebox.constants import TIMEOUT, DOMAIN
+
 
 logger = logging.getLogger(__name__)
 
 
 class Sandbox:
+    """
+    Firebox sandbox provides a secure, isolated environment for running code and commands.
+    It's based on Docker and offers similar functionality to e2b's cloud sandbox.
+    """
+
     @property
     def process(self) -> ProcessManager:
+        """
+        Process manager used to run commands.
+        """
         return self._process
 
     @property
     def terminal(self) -> TerminalManager:
+        """
+        Terminal manager used to create interactive terminals.
+        """
         return self._terminal
 
     @property
     def filesystem(self) -> FilesystemManager:
+        """
+        Filesystem manager used to manage files.
+        """
         return self._filesystem
 
     @property
     def id(self) -> str:
+        """
+        The sandbox ID.
+        """
         return self._docker_sandbox.id
 
     @property
     def is_open(self) -> bool:
+        """
+        Whether the sandbox is open.
+        """
         return self._docker_sandbox.is_running()
 
     def __init__(
@@ -46,9 +69,25 @@ class Sandbox:
         on_exit: Optional[Union[Callable[[int], Any], Callable[[], Any]]] = None,
         metadata: Optional[Dict[str, str]] = None,
         timeout: Optional[float] = TIMEOUT,
+        domain: str = DOMAIN,
     ):
+        """
+        Create a new sandbox.
+
+        :param template: Name of the Docker image to use as a template.
+        :param cwd: The current working directory to use.
+        :param env_vars: A dictionary of environment variables to be used for all processes.
+        :param on_scan_ports: A callback to handle opened ports.
+        :param on_stdout: A default callback that is called when stdout with a newline is received from the process.
+        :param on_stderr: A default callback that is called when stderr with a newline is received from the process.
+        :param on_exit: A default callback that is called when the process exits.
+        :param metadata: A dictionary of strings that is stored alongside the running sandbox.
+        :param timeout: Timeout for sandbox to initialize in seconds, default is 60 seconds.
+        :param domain: The domain to use for the API.
+        """
         self.cwd = cwd or "/home/user"
         self.env_vars = env_vars or {}
+        self.domain = domain
 
         config = DockerSandboxConfig(
             image=template,
@@ -76,6 +115,11 @@ class Sandbox:
         self._open(timeout=timeout)
 
     def _open(self, timeout: Optional[float] = TIMEOUT) -> None:
+        """
+        Open the sandbox.
+
+        :param timeout: Specify the duration, in seconds to give the method to finish its execution before it times out.
+        """
         logger.info(
             f"Opening sandbox with template {self._docker_sandbox.config.image}"
         )
@@ -92,18 +136,33 @@ class Sandbox:
             raise SandboxException(f"Failed to open sandbox: {str(e)}") from e
 
     def close(self) -> None:
+        """
+        Close the sandbox and clean up resources.
+        """
         logger.info(f"Closing sandbox {self.id}")
         self._docker_sandbox.close()
         logger.info(f"Sandbox {self.id} closed")
 
     def keep_alive(self, duration: int) -> None:
+        """
+        Keep the sandbox alive for the specified duration.
+
+        :param duration: Duration in seconds. Must be between 0 and 3600 seconds.
+        """
         if not 0 <= duration <= 3600:
             raise ValueError("Duration must be between 0 and 3600 seconds")
+
         logger.info(f"Keeping sandbox {self.id} alive for {duration} seconds")
         self._docker_sandbox.keep_alive(duration)
 
     @classmethod
     def reconnect(cls, sandbox_id: str, **kwargs):
+        """
+        Reconnects to a previously created sandbox.
+
+        :param sandbox_id: ID of the sandbox to reconnect to
+        :param kwargs: Additional arguments to pass to the Sandbox constructor
+        """
         logger.info(f"Reconnecting to sandbox {sandbox_id}")
         docker_client = docker.from_env()
         try:
@@ -118,10 +177,16 @@ class Sandbox:
             )
             return cls(_sandbox=DockerSandbox(config), **kwargs)
         except docker.errors.NotFound:
-            raise SandboxException(f"Sandbox with ID {sandbox_id} not found")
+            raise SandboxError(f"Sandbox with ID {sandbox_id} not found")
 
     @staticmethod
-    def list() -> List[Dict[str, Any]]:
+    def list(domain: str = DOMAIN) -> List[Dict[str, Any]]:
+        """
+        List all running sandboxes.
+
+        :param domain: The domain to use for the API.
+        :return: List of dictionaries containing information about running sandboxes.
+        """
         docker_client = docker.from_env()
         sandboxes = []
         for container in docker_client.containers.list(
@@ -141,14 +206,84 @@ class Sandbox:
         return sandboxes
 
     @staticmethod
-    def kill(sandbox_id: str) -> None:
+    def kill(sandbox_id: str, domain: str = DOMAIN) -> None:
+        """
+        Kill the running sandbox specified by the sandbox ID.
+
+        :param sandbox_id: ID of the sandbox to kill.
+        :param domain: The domain to use for the API.
+        """
         docker_client = docker.from_env()
         try:
             container = docker_client.containers.get(sandbox_id)
             container.remove(force=True)
             logger.info(f"Sandbox {sandbox_id} killed and removed")
         except docker.errors.NotFound:
-            raise SandboxException(f"Sandbox with ID {sandbox_id} not found")
+            raise SandboxError(f"Sandbox with ID {sandbox_id} not found")
+
+    async def start_process(
+        self,
+        cmd: str,
+        on_stdout: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_stderr: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_exit: Optional[Union[Callable[[int], Any], Callable[[], Any]]] = None,
+        env_vars: Optional[EnvVars] = None,
+        cwd: Optional[str] = None,
+        timeout: Optional[float] = TIMEOUT,
+    ) -> Process:
+        """
+        Start a new process in the sandbox.
+
+        :param cmd: The command to run.
+        :param on_stdout: Callback for stdout messages.
+        :param on_stderr: Callback for stderr messages.
+        :param on_exit: Callback for when the process exits.
+        :param env_vars: Additional environment variables for the process.
+        :param cwd: Working directory for the process.
+        :param timeout: Timeout for starting the process.
+        :return: A Process object representing the started process.
+        """
+        return await self._process.start(
+            cmd,
+            on_stdout,
+            on_stderr,
+            on_exit,
+            env_vars,
+            cwd or self.cwd,
+            timeout=timeout,
+        )
+
+    async def start_and_wait(
+        self,
+        cmd: str,
+        on_stdout: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_stderr: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_exit: Optional[Callable[[int], Any]] = None,
+        env_vars: Optional[EnvVars] = None,
+        cwd: Optional[str] = None,
+        timeout: Optional[float] = TIMEOUT,
+    ) -> ProcessOutput:
+        """
+        Start a new process in the sandbox and wait for it to complete.
+
+        :param cmd: The command to run.
+        :param on_stdout: Callback for stdout messages.
+        :param on_stderr: Callback for stderr messages.
+        :param on_exit: Callback for when the process exits.
+        :param env_vars: Additional environment variables for the process.
+        :param cwd: Working directory for the process.
+        :param timeout: Timeout for the entire operation.
+        :return: A ProcessOutput object containing the results of the process.
+        """
+        return await self._process.start_and_wait(
+            cmd,
+            on_stdout,
+            on_stderr,
+            on_exit,
+            env_vars,
+            cwd or self.cwd,
+            timeout=timeout,
+        )
 
     def __enter__(self):
         return self

@@ -1,16 +1,28 @@
-# firebox/models/__init__.py
-from .sandbox import DockerSandboxConfig, SandboxStatus
-from .process import ProcessConfig, RunningProcess, EnvVars, ProcessMessage
-from .filesystem import FileSystemOperation
+from .code_snippet import OpenPort, CodeSnippet
 from .config import FireboxConfig
+from .filesystem import FileInfo, FileSystemOperation
+from .process import (
+    EnvVars,
+    ProcessMessage,
+    ProcessOutput,
+    ProcessConfig,
+    RunningProcess,
+)
+from .sandbox import DockerSandboxConfig, SandboxStatus
+from .terminal import TerminalOutput
 
 __all__ = [
-    "DockerSandboxConfig",
-    "SandboxStatus",
+    "OpenPort",
+    "CodeSnippet",
+    "FireboxConfig",
+    "FileInfo",
+    "FileSystemOperation",
+    "EnvVars",
+    "ProcessMessage",
+    "ProcessOutput",
     "ProcessConfig",
     "RunningProcess",
-    "ProcessMessage",
-    "EnvVars",
-    "FileSystemOperation",
-    "FireboxConfig",
+    "DockerSandboxConfig",
+    "SandboxStatus",
+    "TerminalOutput",
 ]

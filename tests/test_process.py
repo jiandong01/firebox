@@ -4,7 +4,7 @@ from firebox.docker_sandbox import Sandbox
 from firebox.models import SandboxConfig, ProcessMessage
 from firebox.config import config
 from firebox.logs import logger
-from firebox.exceptions import TimeoutError
+from firebox.exception import TimeoutException
 
 
 @pytest.fixture(scope="function")
@@ -208,12 +208,12 @@ async def test_process_kill(sandbox):
 @pytest.mark.asyncio
 async def test_process_timeout(sandbox):
     logger.info("Starting test_process_timeout")
-    with pytest.raises(TimeoutError):
+    with pytest.raises(TimeoutException):
         running_process = await sandbox.process.start("sleep 10")
         logger.info(f"Started sleep process with PID: {running_process.pid}")
         logger.info("Process started, waiting with timeout")
         await running_process.wait(timeout=2)
-    logger.info("TimeoutError raised as expected")
+    logger.info("TimeoutException raised as expected")
 
 
 @pytest.mark.asyncio

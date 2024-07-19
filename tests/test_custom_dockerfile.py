@@ -2,7 +2,7 @@ import pytest
 import asyncio
 import os
 from firebox.sandbox import Sandbox
-from firebox.models.sandbox import DockerSandboxConfig
+from firebox.models import DockerSandboxConfig
 from firebox.config import config
 from firebox.logs import logger
 
@@ -40,16 +40,16 @@ async def test_custom_dockerfile_sandbox(custom_dockerfile, tmp_path):
     sandbox = None
     try:
         sandbox = Sandbox(sandbox_config)
-        await sandbox.init()
+        await sandbox._open()
 
-        assert sandbox.container.status == "running"
+        assert sandbox._docker_sandbox.container.status == "running"
 
-        result, exit_code = await sandbox.communicate(
+        result = await sandbox.start_and_wait(
             "python -c \"import requests; print('Test successful!')\""
         )
 
-        assert exit_code == 0
-        assert "Test successful!" in result
+        assert result.exit_code == 0
+        assert "Test successful!" in result.stdout
 
         logger.info("Custom Dockerfile sandbox test passed successfully")
     except Exception as e:
@@ -72,7 +72,7 @@ async def test_custom_dockerfile_sandbox_with_volume(custom_dockerfile, tmp_path
     test_file = persistent_storage_path / "test.txt"
     test_file.write_text("Hello from host!")
 
-    sandbox_config = SandboxConfig(
+    sandbox_config = DockerSandboxConfig(
         dockerfile=custom_dockerfile,
         dockerfile_context=os.path.dirname(custom_dockerfile),
         cpu=config.cpu,
@@ -85,14 +85,14 @@ async def test_custom_dockerfile_sandbox_with_volume(custom_dockerfile, tmp_path
     sandbox = None
     try:
         sandbox = Sandbox(sandbox_config)
-        await sandbox.init()
+        await sandbox._open()
 
-        assert sandbox.container.status == "running"
+        assert sandbox._docker_sandbox.container.status == "running"
 
-        result, exit_code = await sandbox.communicate("cat /sandbox/test.txt")
+        result = await sandbox.start_and_wait("cat /sandbox/test.txt")
 
-        assert exit_code == 0
-        assert "Hello from host!" in result
+        assert result.exit_code == 0
+        assert "Hello from host!" in result.stdout
 
         logger.info("Custom Dockerfile sandbox with volume test passed successfully")
     except Exception as e:

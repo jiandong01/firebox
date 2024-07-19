@@ -2,7 +2,7 @@ import pytest
 import docker
 import os
 from firebox.docker_sandbox import Sandbox
-from firebox.exceptions import TimeoutError
+from firebox.exception import TimeoutException
 from firebox.config import config, load_config
 from firebox.models import SandboxConfig
 from firebox.logs import logger
@@ -133,7 +133,7 @@ async def test_firebox_env_vars(sandbox):
 @pytest.mark.asyncio
 async def test_firebox_timeout(sandbox):
     logger.info(f"Testing sandbox timeout with ID: {sandbox.id}")
-    with pytest.raises(TimeoutError):
+    with pytest.raises(TimeoutException):
         await sandbox.communicate("sleep 10", timeout=1)
 
 

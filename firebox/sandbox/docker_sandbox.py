@@ -4,14 +4,14 @@ import uuid
 from typing import Optional, Any, Dict, List
 from docker.errors import APIError
 
-from firebox.models import SandboxConfig
-from firebox.exceptions import SandboxError, TimeoutError
+from firebox.models import DockerSandboxConfig, OpenPort
+from firebox.exception import SandboxException, TimeoutException
 from firebox.config import config
 from firebox.logs import logger
 
 
 class DockerSandbox:
-    def __init__(self, sandbox_config: SandboxConfig, **kwargs):
+    def __init__(self, sandbox_config: DockerSandboxConfig, **kwargs):
         self.config = sandbox_config
         self.id = self.config.sandbox_id or str(uuid.uuid4())
         self.client = docker.from_env()
@@ -40,7 +40,7 @@ class DockerSandbox:
                 )
             except docker.errors.APIError as e:
                 logger.error(f"Failed to create container: {str(e)}")
-                raise SandboxError(f"Failed to create container: {str(e)}") from e
+                raise SandboxException(f"Failed to create container: {str(e)}") from e
 
         if self.container.status != "running":
             logger.info(f"Starting container {self.id}")
@@ -48,13 +48,13 @@ class DockerSandbox:
                 self.container.start()
             except docker.errors.APIError as e:
                 logger.error(f"Failed to start container: {str(e)}")
-                raise SandboxError(f"Failed to start container: {str(e)}") from e
+                raise SandboxException(f"Failed to start container: {str(e)}") from e
 
         self.container.reload()
         if self.container.status != "running":
             logs = self.container.logs().decode("utf-8")
             logger.error(f"Container failed to start. Logs:\n{logs}")
-            raise SandboxError(
+            raise SandboxException(
                 f"Failed to start container. Status: {self.container.status}"
             )
 
@@ -65,7 +65,7 @@ class DockerSandbox:
         start_time = asyncio.get_event_loop().time()
         while True:
             if timeout and asyncio.get_event_loop().time() - start_time > timeout:
-                raise TimeoutError("Container failed to become ready in time")
+                raise TimeoutException("Container failed to become ready in time")
 
             try:
                 exit_code, output = await self.communicate(
@@ -93,7 +93,7 @@ class DockerSandbox:
             return exit_code, output
         except Exception as e:
             logger.error(f"Command execution failed: {str(e)}")
-            raise SandboxError(f"Command execution failed: {str(e)}") from e
+            raise SandboxException(f"Command execution failed: {str(e)}") from e
 
     async def close(self):
         if self.container:
@@ -107,7 +107,7 @@ class DockerSandbox:
                 )
             except docker.errors.APIError as e:
                 logger.error(f"Failed to remove container {self.id}: {str(e)}")
-                raise SandboxError(
+                raise SandboxException(
                     f"Failed to remove container {self.id}: {str(e)}"
                 ) from e
             finally:
@@ -117,7 +117,7 @@ class DockerSandbox:
 
     def get_hostname(self, port: Optional[int] = None) -> str:
         if not self.container:
-            raise SandboxError("Container is not running")
+            raise SandboxException("Container is not running")
 
         if port:
             return f"localhost:{self.container.ports[f'{port}/tcp'][0]['HostPort']}"

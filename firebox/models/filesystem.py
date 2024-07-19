@@ -2,6 +2,11 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 
+class FileInfo(BaseModel):
+    is_dir: bool
+    name: str
+
+
 class FileSystemOperation(BaseModel):
     operation: str = Field(..., description="Type of filesystem operation")
     path: str = Field(..., description="Path for the filesystem operation")
