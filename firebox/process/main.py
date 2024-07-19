@@ -19,21 +19,30 @@ class Process:
         self,
         process_id: str,
         sandbox,
-        trigger_exit: Callable[[], Any],
-        finished: asyncio.Future,
-        output: ProcessOutput,
+        cmd: str,
+        env_vars: Dict[str, str],
+        cwd: str,
+        on_stdout: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_stderr: Optional[Callable[[ProcessMessage], Any]] = None,
+        on_exit: Optional[Union[Callable[[int], Any], Callable[[], Any]]] = None,
     ):
         self._process_id = process_id
         self._sandbox = sandbox
-        self._trigger_exit = trigger_exit
-        self._finished = finished
-        self._output = output
+        self._cmd = cmd
+        self._env_vars = env_vars
+        self._cwd = cwd
+        self._on_stdout = on_stdout
+        self._on_stderr = on_stderr
+        self._on_exit = on_exit
+        self._output = ProcessOutput()
+        self._finished = asyncio.Future()
+        self._task = None
 
     @property
     def exit_code(self) -> Optional[int]:
-        if not self.finished:
+        if not self._finished.done():
             raise ProcessException("Process has not finished yet")
-        return self.output.exit_code
+        return self._output.exit_code
 
     @property
     def output(self) -> ProcessOutput:
@@ -63,37 +72,64 @@ class Process:
     def process_id(self) -> str:
         return self._process_id
 
+    async def start(self):
+        self._task = asyncio.create_task(self._run())
+
+    async def _run(self):
+        try:
+            env_vars_str = " ".join(f"{k}={v}" for k, v in self._env_vars.items())
+            full_cmd = f"cd {self._cwd} && {env_vars_str} {self._cmd}"
+            exit_code, output = await self._sandbox.communicate(full_cmd)
+
+            lines = output.splitlines()
+            timestamp = int(time.time() * 1e9)  # nanoseconds
+            for line in lines:
+                message = ProcessMessage(line=line, timestamp=timestamp, error=False)
+                self._output._add_stdout(message)
+                if self._on_stdout:
+                    self._on_stdout(message)
+
+            self._output.exit_code = exit_code
+            if self._on_exit:
+                self._on_exit(exit_code)
+        except Exception as e:
+            logger.error(f"Error running process: {str(e)}")
+            self._output.error = True
+            if self._on_stderr:
+                self._on_stderr(
+                    ProcessMessage(
+                        line=str(e), timestamp=int(time.time() * 1e9), error=True
+                    )
+                )
+        finally:
+            self._finished.set_result(True)
+
     async def wait(self, timeout: Optional[float] = None) -> ProcessOutput:
         try:
             await asyncio.wait_for(self._finished, timeout=timeout)
             return self._output
-        except asyncio.TimeoutException:
+        except asyncio.TimeoutError:
             raise TimeoutException(f"Process did not finish within {timeout} seconds")
 
     async def send_stdin(self, data: str, timeout: Optional[float] = TIMEOUT) -> None:
-        try:
-            await self._sandbox._call(
-                ProcessManager._service_name,
-                "stdin",
-                [self.process_id, data],
-                timeout=timeout,
-            )
-        except Exception as e:
-            raise ProcessException(f"Failed to send stdin: {str(e)}") from e
+        raise NotImplementedError(
+            "send_stdin is not implemented for this Process class"
+        )
 
     async def kill(self, timeout: Optional[float] = TIMEOUT) -> None:
-        try:
-            await self._sandbox._call(
-                ProcessManager._service_name, "kill", [self.process_id], timeout=timeout
-            )
-        except Exception as e:
-            raise ProcessException(f"Failed to kill process: {str(e)}") from e
-        self._trigger_exit()
+        if self._task:
+            self._task.cancel()
+            try:
+                await asyncio.wait_for(self._task, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Failed to cancel process {self._process_id} within timeout"
+                )
+            except asyncio.CancelledError:
+                pass
 
 
 class ProcessManager:
-    _service_name = "process"
-
     def __init__(
         self,
         sandbox,
@@ -125,106 +161,25 @@ class ProcessManager:
         on_stderr = on_stderr or self._on_stderr
         on_exit = on_exit or self._on_exit
 
-        future_exit = asyncio.Future()
         process_id = process_id or f"process_{int(time.time() * 1000)}"
 
-        output = ProcessOutput()
+        if not cwd and self._sandbox.cwd:
+            cwd = self._sandbox.cwd
 
-        def handle_exit(exit_code: int):
-            output.exit_code = exit_code
-            logger.info(f"Process {process_id} exited with exit code {exit_code}")
-            if not future_exit.done():
-                future_exit.set_result(True)
+        process = Process(
+            process_id=process_id,
+            sandbox=self._sandbox,
+            cmd=cmd,
+            env_vars=env_vars,
+            cwd=cwd,
+            on_stdout=on_stdout,
+            on_stderr=on_stderr,
+            on_exit=on_exit,
+        )
 
-        def handle_stdout(data: Dict[str, Any]):
-            message = ProcessMessage(
-                line=data["line"],
-                timestamp=data["timestamp"],
-                error=False,
-            )
-            output._add_stdout(message)
-            if on_stdout:
-                on_stdout(message)
-
-        def handle_stderr(data: Dict[str, Any]):
-            message = ProcessMessage(
-                line=data["line"],
-                timestamp=data["timestamp"],
-                error=True,
-            )
-            output._add_stderr(message)
-            if on_stderr:
-                on_stderr(message)
-
-        try:
-            unsub_all = await self._sandbox._handle_subscriptions(
-                self._service_name,
-                handle_exit,
-                "onExit",
-                [process_id],
-                self._service_name,
-                handle_stdout,
-                "onStdout",
-                [process_id],
-                self._service_name,
-                handle_stderr,
-                "onStderr",
-                [process_id],
-            )
-        except Exception as e:
-            raise ProcessException("Failed to subscribe to process events") from e
-
-        future_exit_handler_finish = asyncio.Future()
-
-        def exit_handler():
-            future_exit.result()
-            logger.info(f"Handling process exit (id: {process_id})")
-            unsub_all()
-            if on_exit:
-                try:
-                    on_exit(output.exit_code or 0)
-                except Exception as error:
-                    logger.exception(f"Error in on_exit callback: {error}")
-            future_exit_handler_finish.set_result(output)
-
-        asyncio.create_task(exit_handler())
-
-        def trigger_exit():
-            logger.info(f"Exiting the process (id: {process_id})")
-            if not future_exit.done():
-                future_exit.set_result(None)
-            future_exit_handler_finish.result()
-
-        try:
-            if not cwd and self._sandbox.cwd:
-                cwd = self._sandbox.cwd
-
-            await self._sandbox._call(
-                self._service_name,
-                "start",
-                [
-                    process_id,
-                    cmd,
-                    env_vars,
-                    cwd,
-                ],
-                timeout=timeout,
-            )
-            logger.info(f"Started process (id: {process_id})")
-            return Process(
-                output=output,
-                sandbox=self._sandbox,
-                process_id=process_id,
-                trigger_exit=trigger_exit,
-                finished=future_exit_handler_finish,
-            )
-        except Exception as e:
-            trigger_exit()
-            if "no such file or directory" in str(e).lower():
-                raise CurrentWorkingDirectoryDoesntExistException(
-                    "Failed to start the process. You are trying to set `cwd` to a directory that does not exist."
-                ) from e
-            raise ProcessException(f"Failed to start process: {str(e)}") from e
+        await process.start()
+        logger.info(f"Started process (id: {process_id})")
+        return process
 
     async def start_and_wait(
         self,
@@ -245,6 +200,5 @@ class ProcessManager:
             env_vars=env_vars,
             cwd=cwd,
             process_id=process_id,
-            timeout=timeout,
         )
         return await process.wait(timeout)

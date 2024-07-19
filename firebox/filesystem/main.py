@@ -16,8 +16,6 @@ class FilesystemManager:
     Manager for interacting with the filesystem in the sandbox.
     """
 
-    _service_name = "filesystem"
-
     def __init__(self, sandbox):
         self._sandbox = sandbox
 
@@ -36,10 +34,12 @@ class FilesystemManager:
         """
         path = resolve_path(path, self.cwd)
         try:
-            result: str = await self._sandbox._call(
-                self._service_name, "readBase64", [path], timeout=timeout
+            exit_code, output = await self._sandbox.communicate(
+                f"base64 {path}", timeout=timeout
             )
-            return base64.b64decode(result)
+            if exit_code != 0:
+                raise Exception(f"Failed to read file: {output}")
+            return base64.b64decode(output)
         except Exception as e:
             raise FilesystemException(
                 f"Failed to read bytes from {path}: {str(e)}"
@@ -62,12 +62,11 @@ class FilesystemManager:
         path = resolve_path(path, self.cwd)
         base64_content = base64.b64encode(content).decode("utf-8")
         try:
-            await self._sandbox._call(
-                self._service_name,
-                "writeBase64",
-                [path, base64_content],
-                timeout=timeout,
+            exit_code, output = await self._sandbox.communicate(
+                f"echo '{base64_content}' | base64 -d > {path}", timeout=timeout
             )
+            if exit_code != 0:
+                raise Exception(f"Failed to write file: {output}")
         except Exception as e:
             raise FilesystemException(
                 f"Failed to write bytes to {path}: {str(e)}"
@@ -84,11 +83,13 @@ class FilesystemManager:
         logger.debug(f"Reading file {path}")
         path = resolve_path(path, self.cwd)
         try:
-            result: str = await self._sandbox._call(
-                self._service_name, "read", [path], timeout=timeout
+            exit_code, output = await self._sandbox.communicate(
+                f"cat {path}", timeout=timeout
             )
+            if exit_code != 0:
+                raise Exception(f"Failed to read file: {output}")
             logger.debug(f"Read file {path}")
-            return result
+            return output
         except Exception as e:
             raise FilesystemException(f"Failed to read file {path}: {str(e)}") from e
 
@@ -108,9 +109,11 @@ class FilesystemManager:
         logger.debug(f"Writing file {path}")
         path = resolve_path(path, self.cwd)
         try:
-            await self._sandbox._call(
-                self._service_name, "write", [path, content], timeout=timeout
+            exit_code, output = await self._sandbox.communicate(
+                f"echo '{content}' > {path}", timeout=timeout
             )
+            if exit_code != 0:
+                raise Exception(f"Failed to write file: {output}")
             logger.debug(f"Wrote file {path}")
         except Exception as e:
             raise FilesystemException(
@@ -127,9 +130,11 @@ class FilesystemManager:
         logger.debug(f"Removing file {path}")
         path = resolve_path(path, self.cwd)
         try:
-            await self._sandbox._call(
-                self._service_name, "remove", [path], timeout=timeout
+            exit_code, output = await self._sandbox.communicate(
+                f"rm -rf {path}", timeout=timeout
             )
+            if exit_code != 0:
+                raise Exception(f"Failed to remove file: {output}")
             logger.debug(f"Removed file {path}")
         except Exception as e:
             raise FilesystemException(f"Failed to remove {path}: {str(e)}") from e
@@ -147,14 +152,20 @@ class FilesystemManager:
         logger.debug(f"Listing files in {path}")
         path = resolve_path(path, self.cwd)
         try:
-            result: List[dict] = await self._sandbox._call(
-                self._service_name, "list", [path], timeout=timeout
+            exit_code, output = await self._sandbox.communicate(
+                f"ls -l {path}", timeout=timeout
             )
-            logger.debug(f"Listed files in {path}, result: {result}")
-            return [
-                FileInfo(is_dir=file_info["isDir"], name=file_info["name"])
-                for file_info in result
-            ]
+            if exit_code != 0:
+                raise Exception(f"Failed to list directory: {output}")
+            logger.debug(f"Listed files in {path}, result: {output}")
+            files = []
+            for line in output.split("\n")[1:]:  # Skip the first line (total)
+                parts = line.split()
+                if len(parts) >= 9:
+                    is_dir = parts[0].startswith("d")
+                    name = " ".join(parts[8:])
+                    files.append(FileInfo(is_dir=is_dir, name=name))
+            return files
         except Exception as e:
             raise FilesystemException(
                 f"Failed to list directory {path}: {str(e)}"
@@ -170,9 +181,11 @@ class FilesystemManager:
         logger.debug(f"Creating directory {path}")
         path = resolve_path(path, self.cwd)
         try:
-            await self._sandbox._call(
-                self._service_name, "makeDir", [path], timeout=timeout
+            exit_code, output = await self._sandbox.communicate(
+                f"mkdir -p {path}", timeout=timeout
             )
+            if exit_code != 0:
+                raise Exception(f"Failed to create directory: {output}")
             logger.debug(f"Created directory {path}")
         except Exception as e:
             raise FilesystemException(
@@ -189,10 +202,10 @@ class FilesystemManager:
         """
         path = resolve_path(path, self.cwd)
         try:
-            result: bool = await self._sandbox._call(
-                self._service_name, "exists", [path], timeout=timeout
+            exit_code, _ = await self._sandbox.communicate(
+                f"test -e {path}", timeout=timeout
             )
-            return result
+            return exit_code == 0
         except Exception as e:
             raise FilesystemException(
                 f"Failed to check existence of {path}: {str(e)}"
@@ -208,10 +221,10 @@ class FilesystemManager:
         """
         path = resolve_path(path, self.cwd)
         try:
-            result: bool = await self._sandbox._call(
-                self._service_name, "isFile", [path], timeout=timeout
+            exit_code, _ = await self._sandbox.communicate(
+                f"test -f {path}", timeout=timeout
             )
-            return result
+            return exit_code == 0
         except Exception as e:
             raise FilesystemException(
                 f"Failed to check if {path} is a file: {str(e)}"
@@ -227,10 +240,10 @@ class FilesystemManager:
         """
         path = resolve_path(path, self.cwd)
         try:
-            result: bool = await self._sandbox._call(
-                self._service_name, "isDir", [path], timeout=timeout
+            exit_code, _ = await self._sandbox.communicate(
+                f"test -d {path}", timeout=timeout
             )
-            return result
+            return exit_code == 0
         except Exception as e:
             raise FilesystemException(
                 f"Failed to check if {path} is a directory: {str(e)}"
@@ -246,10 +259,12 @@ class FilesystemManager:
         """
         path = resolve_path(path, self.cwd)
         try:
-            result: int = await self._sandbox._call(
-                self._service_name, "getSize", [path], timeout=timeout
+            exit_code, output = await self._sandbox.communicate(
+                f"du -sb {path} | cut -f1", timeout=timeout
             )
-            return result
+            if exit_code != 0:
+                raise Exception(f"Failed to get size: {output}")
+            return int(output.strip())
         except Exception as e:
             raise FilesystemException(f"Failed to get size of {path}: {str(e)}") from e
 
@@ -265,5 +280,5 @@ class FilesystemManager:
         return Watcher(
             connection=self._sandbox,
             path=path,
-            service_name=self._service_name,
+            service_name="filesystem",
         )

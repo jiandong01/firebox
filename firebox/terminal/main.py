@@ -1,5 +1,10 @@
 import asyncio
 import logging
+import pty
+import os
+import fcntl
+import termios
+import struct
 from typing import Any, Callable, Optional, Dict
 
 from firebox.constants import TIMEOUT
@@ -47,21 +52,46 @@ class Terminal:
         self,
         terminal_id: str,
         sandbox,
-        trigger_exit: Callable[[], Any],
-        finished: asyncio.Future,
-        output: TerminalOutput,
+        master_fd: int,
+        slave_fd: int,
+        process: asyncio.subprocess.Process,
+        on_data: Callable[[str], Any],
+        on_exit: Optional[Callable[[], Any]],
     ):
         self._terminal_id = terminal_id
         self._sandbox = sandbox
-        self._trigger_exit = trigger_exit
-        self._finished = finished
-        self._output = output
+        self._master_fd = master_fd
+        self._slave_fd = slave_fd
+        self._process = process
+        self._on_data = on_data
+        self._on_exit = on_exit
+        self._output = TerminalOutput()
+        self._finished = asyncio.Future()
+        self._read_task = asyncio.create_task(self._read_output())
+
+    async def _read_output(self):
+        try:
+            while True:
+                data = await self._sandbox.loop.run_in_executor(
+                    None, os.read, self._master_fd, 1024
+                )
+                if not data:
+                    break
+                decoded_data = data.decode()
+                self._output._add_data(decoded_data)
+                self._on_data(decoded_data)
+        except Exception as e:
+            logger.error(f"Error reading from terminal: {str(e)}")
+        finally:
+            self._finished.set_result(None)
+            if self._on_exit:
+                self._on_exit()
 
     async def wait(self):
         """
         Wait till the terminal session exits.
         """
-        return await self.finished
+        return await self._finished
 
     async def send_data(self, data: str, timeout: Optional[float] = TIMEOUT) -> None:
         """
@@ -71,11 +101,8 @@ class Terminal:
         :param timeout: Specify the duration, in seconds to give the method to finish its execution before it times out
         """
         try:
-            await self._sandbox._call(
-                TerminalManager._service_name,
-                "data",
-                [self.terminal_id, data],
-                timeout=timeout,
+            await self._sandbox.loop.run_in_executor(
+                None, os.write, self._master_fd, data.encode()
             )
         except Exception as e:
             raise TerminalException(f"Failed to send data to terminal: {str(e)}") from e
@@ -91,11 +118,9 @@ class Terminal:
         :param timeout: Specify the duration, in seconds to give the method to finish its execution before it times out
         """
         try:
-            await self._sandbox._call(
-                TerminalManager._service_name,
-                "resize",
-                [self.terminal_id, cols, rows],
-                timeout=timeout,
+            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+            await self._sandbox.loop.run_in_executor(
+                None, fcntl.ioctl, self._master_fd, termios.TIOCSWINSZ, winsize
             )
         except Exception as e:
             raise TerminalException(f"Failed to resize terminal: {str(e)}") from e
@@ -107,23 +132,26 @@ class Terminal:
         :param timeout: Specify the duration, in seconds to give the method to finish its execution before it times out
         """
         try:
-            await self._sandbox._call(
-                TerminalManager._service_name,
-                "destroy",
-                [self.terminal_id],
-                timeout=timeout,
-            )
+            self._process.terminate()
+            await asyncio.wait_for(self._process.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            self._process.kill()
         except Exception as e:
             raise TerminalException(f"Failed to kill terminal: {str(e)}") from e
-        self._trigger_exit()
+        finally:
+            os.close(self._master_fd)
+            os.close(self._slave_fd)
+            self._read_task.cancel()
+            try:
+                await self._read_task
+            except asyncio.CancelledError:
+                pass
 
 
 class TerminalManager:
     """
     Manager for starting and interacting with terminal sessions in the sandbox.
     """
-
-    _service_name = "terminal"
 
     def __init__(self, sandbox):
         self._sandbox = sandbox
@@ -157,77 +185,36 @@ class TerminalManager:
         :return: Terminal session
         """
         env_vars = {**self._sandbox.env_vars, **(env_vars or {})}
-
-        future_exit = asyncio.Future()
         terminal_id = terminal_id or create_id(12)
 
-        output = TerminalOutput()
+        if not cwd and self._sandbox.cwd:
+            cwd = self._sandbox.cwd
 
-        def handle_data(data: str):
-            output._add_data(data)
-            on_data(data)
+        master_fd, slave_fd = pty.openpty()
 
-        try:
-            unsub_all = await self._sandbox._handle_subscriptions(
-                SubscriptionArgs(
-                    service=self._service_name,
-                    handler=handle_data,
-                    method="onData",
-                    params=[terminal_id],
-                ),
-                SubscriptionArgs(
-                    service=self._service_name,
-                    handler=lambda result: future_exit.set_result(result),
-                    method="onExit",
-                    params=[terminal_id],
-                ),
-            )
-        except Exception as e:
-            future_exit.cancel()
-            raise TerminalException("Failed to subscribe to terminal events") from e
+        # Set the terminal size
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
 
-        future_exit_handler_finish: asyncio.Future[TerminalOutput] = asyncio.Future()
+        cmd = cmd or "bash"
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=env_vars,
+            cwd=cwd,
+            start_new_session=True,
+        )
 
-        def exit_handler():
-            future_exit.result()
+        terminal = Terminal(
+            terminal_id=terminal_id,
+            sandbox=self._sandbox,
+            master_fd=master_fd,
+            slave_fd=slave_fd,
+            process=process,
+            on_data=on_data,
+            on_exit=on_exit,
+        )
 
-            if unsub_all:
-                unsub_all()
-
-            if on_exit:
-                on_exit()
-            future_exit_handler_finish.set_result(output)
-
-        asyncio.create_task(exit_handler())
-
-        def trigger_exit():
-            future_exit.set_result(None)
-            return future_exit_handler_finish.result()
-
-        try:
-            if not cwd and self._sandbox.cwd:
-                cwd = self._sandbox.cwd
-
-            await self._sandbox._call(
-                self._service_name,
-                "start",
-                [
-                    terminal_id,
-                    cols,
-                    rows,
-                    env_vars,
-                    cmd,
-                    cwd,
-                ],
-                timeout=timeout,
-            )
-            return Terminal(
-                terminal_id=terminal_id,
-                sandbox=self._sandbox,
-                trigger_exit=trigger_exit,
-                finished=future_exit_handler_finish,
-                output=output,
-            )
-        except Exception as e:
-            trigger_exit()
-            raise TerminalException(f"Failed to start terminal: {str(e)}") from e
+        return terminal

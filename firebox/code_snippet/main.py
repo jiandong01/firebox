@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Any, Callable, ClassVar, List, Optional
+import json
 
 from firebox.models import OpenPort, CodeSnippet
 from firebox.exception import SandboxException
@@ -13,8 +14,6 @@ ScanOpenedPortsHandler = Callable[[List[OpenPort]], Any]
 
 
 class CodeSnippetManager:
-    service_name: ClassVar[str] = "codeSnippet"
-
     def __init__(
         self,
         sandbox,
@@ -42,10 +41,20 @@ class CodeSnippetManager:
 
     async def _scan_ports(self) -> List[OpenPort]:
         try:
-            result = await self.sandbox._call(
-                self.service_name, "scanOpenedPorts", timeout=TIMEOUT
+            exit_code, output = await self.sandbox.communicate(
+                "netstat -tuln | grep LISTEN", timeout=TIMEOUT
             )
-            return [OpenPort(**port) for port in result]
+            if exit_code != 0:
+                raise Exception(f"Failed to scan ports: {output}")
+
+            ports = []
+            for line in output.split("\n"):
+                if line.strip():
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        ip, port = parts[3].rsplit(":", 1)
+                        ports.append(OpenPort(ip=ip, port=int(port), state="LISTEN"))
+            return ports
         except Exception as e:
             logger.error(f"Failed to scan ports: {str(e)}")
             return []
@@ -61,9 +70,14 @@ class CodeSnippetManager:
         :param timeout: Timeout for the operation
         """
         try:
-            await self.sandbox._call(
-                self.service_name, "addScript", [name, content], timeout=timeout
+            script_path = f"/root/commands/{name}"
+            escaped_content = content.replace('"', '\\"')
+            exit_code, output = await self.sandbox.communicate(
+                f'echo "{escaped_content}" > {script_path} && chmod +x {script_path}',
+                timeout=timeout,
             )
+            if exit_code != 0:
+                raise Exception(f"Failed to add script: {output}")
             logger.info(f"Added script: {name}")
         except Exception as e:
             raise SandboxException(f"Failed to add script {name}: {str(e)}") from e
@@ -78,9 +92,12 @@ class CodeSnippetManager:
         :param timeout: Timeout for the operation
         """
         try:
-            await self.sandbox._call(
-                self.service_name, "removeScript", [name], timeout=timeout
+            script_path = f"/root/commands/{name}"
+            exit_code, output = await self.sandbox.communicate(
+                f"rm -f {script_path}", timeout=timeout
             )
+            if exit_code != 0:
+                raise Exception(f"Failed to remove script: {output}")
             logger.info(f"Removed script: {name}")
         except Exception as e:
             raise SandboxException(f"Failed to remove script {name}: {str(e)}") from e
@@ -95,10 +112,18 @@ class CodeSnippetManager:
         :return: List of CodeSnippet objects
         """
         try:
-            result = await self.sandbox._call(
-                self.service_name, "listScripts", timeout=timeout
+            exit_code, output = await self.sandbox.communicate(
+                "ls -1 /root/commands", timeout=timeout
             )
-            return [CodeSnippet(**script) for script in result]
+            if exit_code != 0:
+                raise Exception(f"Failed to list scripts: {output}")
+
+            scripts = []
+            for name in output.split("\n"):
+                if name.strip():
+                    content = await self.get_script_content(name, timeout)
+                    scripts.append(CodeSnippet(name=name, content=content))
+            return scripts
         except Exception as e:
             raise SandboxException(f"Failed to list scripts: {str(e)}") from e
 
@@ -113,9 +138,25 @@ class CodeSnippetManager:
         :return: CodeSnippet object
         """
         try:
-            result = await self.sandbox._call(
-                self.service_name, "getScript", [name], timeout=timeout
-            )
-            return CodeSnippet(**result)
+            content = await self.get_script_content(name, timeout)
+            return CodeSnippet(name=name, content=content)
         except Exception as e:
             raise SandboxException(f"Failed to get script {name}: {str(e)}") from e
+
+    async def get_script_content(
+        self, name: str, timeout: Optional[float] = TIMEOUT
+    ) -> str:
+        """
+        Get the content of a specific script.
+
+        :param name: Name of the script
+        :param timeout: Timeout for the operation
+        :return: Content of the script
+        """
+        script_path = f"/root/commands/{name}"
+        exit_code, output = await self.sandbox.communicate(
+            f"cat {script_path}", timeout=timeout
+        )
+        if exit_code != 0:
+            raise Exception(f"Failed to read script content: {output}")
+        return output

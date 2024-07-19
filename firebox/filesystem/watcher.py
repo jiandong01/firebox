@@ -22,7 +22,7 @@ class FilesystemEvent(BaseModel):
     """
     is_dir: bool
 
-    class Config:
+    class ConfigDict:
         alias_generator = snake_case_to_camel_case
 
 

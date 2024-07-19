@@ -1,5 +1,6 @@
 import logging
 import docker
+import asyncio
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from .docker_sandbox import DockerSandbox
@@ -60,7 +61,7 @@ class Sandbox:
 
     def __init__(
         self,
-        template: str = "base",
+        template: Union[str, DockerSandboxConfig] = "base",
         cwd: Optional[str] = None,
         env_vars: Optional[EnvVars] = None,
         on_scan_ports: Optional[Callable[[List[OpenPort]], Any]] = None,
@@ -89,16 +90,19 @@ class Sandbox:
         self.env_vars = env_vars or {}
         self.domain = domain
 
-        config = DockerSandboxConfig(
-            image=template,
-            cpu=1,
-            memory="1g",
-            environment=self.env_vars,
-            cwd=self.cwd,
-            metadata=metadata,
-        )
+        if isinstance(template, DockerSandboxConfig):
+            self._docker_sandbox_config = template
+        else:
+            self._docker_sandbox_config = DockerSandboxConfig(
+                image=template,
+                cpu=1,
+                memory="1g",
+                environment=self.env_vars,
+                cwd=self.cwd,
+                metadata=metadata,
+            )
 
-        self._docker_sandbox = DockerSandbox(config)
+        self._docker_sandbox = DockerSandbox(self._docker_sandbox_config)
         self._code_snippet = CodeSnippetManager(
             sandbox=self._docker_sandbox,
             on_scan_ports=on_scan_ports,
@@ -112,9 +116,7 @@ class Sandbox:
             on_exit=on_exit,
         )
 
-        self._open(timeout=timeout)
-
-    def _open(self, timeout: Optional[float] = TIMEOUT) -> None:
+    async def open(self, timeout: Optional[float] = TIMEOUT) -> None:
         """
         Open the sandbox.
 
@@ -124,24 +126,30 @@ class Sandbox:
             f"Opening sandbox with template {self._docker_sandbox.config.image}"
         )
         try:
-            self._docker_sandbox.init(timeout=timeout)
-            self._code_snippet._subscribe()
+            await self._docker_sandbox.init(timeout=timeout)
+            asyncio.create_task(self._code_snippet.subscribe())
             logger.info(f"Sandbox opened successfully")
 
             if self.cwd:
-                self.filesystem.make_dir(self.cwd)
+                await self._filesystem.make_dir(self.cwd)
         except Exception as e:
             logger.error(f"Failed to open sandbox: {str(e)}")
-            self.close()
+            await self.close()
             raise SandboxException(f"Failed to open sandbox: {str(e)}") from e
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """
         Close the sandbox and clean up resources.
         """
         logger.info(f"Closing sandbox {self.id}")
-        self._docker_sandbox.close()
+        await self._docker_sandbox.close()
         logger.info(f"Sandbox {self.id} closed")
+
+    @classmethod
+    async def create(cls, *args, **kwargs):
+        sandbox = cls(*args, **kwargs)
+        await sandbox.open()
+        return sandbox
 
     def keep_alive(self, duration: int) -> None:
         """
@@ -177,7 +185,7 @@ class Sandbox:
             )
             return cls(_sandbox=DockerSandbox(config), **kwargs)
         except docker.errors.NotFound:
-            raise SandboxError(f"Sandbox with ID {sandbox_id} not found")
+            raise SandboxException(f"Sandbox with ID {sandbox_id} not found")
 
     @staticmethod
     def list(domain: str = DOMAIN) -> List[Dict[str, Any]]:
@@ -219,7 +227,7 @@ class Sandbox:
             container.remove(force=True)
             logger.info(f"Sandbox {sandbox_id} killed and removed")
         except docker.errors.NotFound:
-            raise SandboxError(f"Sandbox with ID {sandbox_id} not found")
+            raise SandboxException(f"Sandbox with ID {sandbox_id} not found")
 
     async def start_process(
         self,

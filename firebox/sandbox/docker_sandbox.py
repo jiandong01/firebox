@@ -1,3 +1,4 @@
+import os
 import asyncio
 import docker
 import uuid
@@ -14,12 +15,20 @@ class DockerSandbox:
     def __init__(self, sandbox_config: DockerSandboxConfig, **kwargs):
         self.config = sandbox_config
         self.id = self.config.sandbox_id or str(uuid.uuid4())
+        self.cwd = self.config.cwd
+        self.env_vars = self.config.environment
         self.client = docker.from_env()
         self.container = None
         self.kwargs = kwargs
 
     async def init(self, timeout: Optional[float] = None):
         logger.info(f"Initializing sandbox with ID: {self.id}")
+
+        # Ensure the persistent storage directory exists on the host
+        os.makedirs(self.config.persistent_storage_path, exist_ok=True)
+
+        if self.config.dockerfile:
+            await self._build_image()
 
         try:
             self.container = self.client.containers.get(
@@ -29,15 +38,28 @@ class DockerSandbox:
                 f"Container {self.id} already exists, status: {self.container.status}"
             )
         except docker.errors.NotFound:
-            logger.info(f"Creating new container {self.id}")
+            logger.info(f"Creating new container {config.container_prefix}_{self.id}")
             try:
-                self.container = self.client.containers.run(
-                    self.config.image,
-                    name=f"{config.container_prefix}_{self.id}",
-                    detach=True,
-                    **self.config.dict(exclude={"sandbox_id", "image"}),
-                    **self.kwargs,
-                )
+                volumes = {
+                    os.path.abspath(self.config.persistent_storage_path): {
+                        "bind": self.config.cwd,
+                        "mode": "rw",
+                    }
+                }
+                container_config = {
+                    "image": self.config.image,
+                    "name": f"{config.container_prefix}_{self.id}",
+                    "detach": True,
+                    "tty": True,
+                    "stdin_open": True,
+                    "cpu_count": self.config.cpu,
+                    "mem_limit": self.config.memory,
+                    "volumes": volumes,
+                    "environment": self.config.environment,
+                    "working_dir": self.config.cwd,
+                    "command": "tail -f /dev/null",  # Keep container running
+                }
+                self.container = self.client.containers.run(**container_config)
             except docker.errors.APIError as e:
                 logger.error(f"Failed to create container: {str(e)}")
                 raise SandboxException(f"Failed to create container: {str(e)}") from e
@@ -58,8 +80,21 @@ class DockerSandbox:
                 f"Failed to start container. Status: {self.container.status}"
             )
 
-        logger.info(f"Container {self.id} is running")
+        logger.info(f"Container {config.container_prefix}_{self.id} is running")
         await self._ensure_container_ready(timeout)
+        await self._init_scripts()
+
+    async def _build_image(self):
+        logger.info(f"Building custom image for sandbox {self.id}")
+        try:
+            self.client.images.build(
+                path=self.config.dockerfile_context,
+                dockerfile=self.config.dockerfile,
+                tag=self.config.image,
+            )
+        except docker.errors.BuildError as e:
+            logger.error(f"Failed to build custom image: {str(e)}")
+            raise SandboxException(f"Failed to build custom image: {str(e)}") from e
 
     async def _ensure_container_ready(self, timeout: Optional[float] = None):
         start_time = asyncio.get_event_loop().time()
@@ -76,6 +111,17 @@ class DockerSandbox:
             except Exception:
                 pass
             await asyncio.sleep(0.1)
+
+    async def _init_scripts(self):
+        logger.info("Initializing scripts")
+        commands = [
+            "source /root/.bashrc",
+            "mkdir -p /root/commands",
+            "touch /root/commands/__init__.py",
+            "export PATH=$PATH:/root/commands",
+        ]
+        for cmd in commands:
+            await self.communicate(cmd)
 
     async def communicate(
         self, command: str, timeout: Optional[float] = None

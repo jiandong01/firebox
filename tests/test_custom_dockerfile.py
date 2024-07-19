@@ -28,6 +28,7 @@ async def test_custom_dockerfile_sandbox(custom_dockerfile, tmp_path):
     persistent_storage_path.mkdir(exist_ok=True)
 
     sandbox_config = DockerSandboxConfig(
+        image="custom-image",  # This will be overwritten by the Dockerfile
         dockerfile=custom_dockerfile,
         dockerfile_context=os.path.dirname(custom_dockerfile),
         cpu=config.cpu,
@@ -39,9 +40,9 @@ async def test_custom_dockerfile_sandbox(custom_dockerfile, tmp_path):
 
     sandbox = None
     try:
-        sandbox = Sandbox(sandbox_config)
-        await sandbox._open()
+        sandbox = await Sandbox.create(template=sandbox_config)
 
+        assert sandbox._docker_sandbox.container is not None
         assert sandbox._docker_sandbox.container.status == "running"
 
         result = await sandbox.start_and_wait(
@@ -79,14 +80,15 @@ async def test_custom_dockerfile_sandbox_with_volume(custom_dockerfile, tmp_path
         memory=config.memory,
         environment={"TEST_ENV": "test_value"},
         persistent_storage_path=str(persistent_storage_path),
+        volumes={str(persistent_storage_path): {"bind": "/sandbox", "mode": "rw"}},
         cwd="/sandbox",
     )
 
     sandbox = None
     try:
-        sandbox = Sandbox(sandbox_config)
-        await sandbox._open()
+        sandbox = await Sandbox.create(template=sandbox_config)
 
+        assert sandbox._docker_sandbox.container is not None
         assert sandbox._docker_sandbox.container.status == "running"
 
         result = await sandbox.start_and_wait("cat /sandbox/test.txt")
