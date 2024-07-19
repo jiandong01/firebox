@@ -1,11 +1,11 @@
 # firebox/models/__init__.py
-from .sandbox import SandboxConfig, SandboxStatus
+from .sandbox import DockerSandboxConfig, SandboxStatus
 from .process import ProcessConfig, RunningProcess, EnvVars, ProcessMessage
 from .filesystem import FileSystemOperation
 from .config import FireboxConfig
 
 __all__ = [
-    "SandboxConfig",
+    "DockerSandboxConfig",
     "SandboxStatus",
     "ProcessConfig",
     "RunningProcess",

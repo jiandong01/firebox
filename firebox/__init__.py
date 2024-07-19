@@ -1,10 +1,10 @@
-from .docker_sandbox import Sandbox, SandboxConfig
-from .filesystem import Filesystem
-from .process import Process, RunningProcess
+from .sandbox import Sandbox
+from .docker_sandbox import DockerSandboxConfig
+from .process.main import RunningProcess
 
 __all__ = [
     "Sandbox",
-    "SandboxConfig",
+    "DockerSandboxConfig",
     "Filesystem",
     "Process",
     "RunningProcess",

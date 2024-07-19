@@ -1,9 +1,8 @@
 from typing import Any, Callable, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import asyncio
 
-from .exceptions import SandboxError
-from .docker_sandbox import DockerSandbox
+from ..exceptions import SandboxError
 
 
 class OpenPort(BaseModel):
@@ -18,7 +17,7 @@ ScanOpenedPortsHandler = Callable[[List[OpenPort]], Any]
 class CodeSnippetManager:
     def __init__(
         self,
-        sandbox: DockerSandbox,
+        sandbox,
         on_scan_ports: Optional[ScanOpenedPortsHandler] = None,
     ):
         self.sandbox = sandbox
@@ -53,3 +52,10 @@ class CodeSnippetManager:
                     ip, port = parts[3].rsplit(":", 1)
                     ports.append(OpenPort(ip=ip, port=int(port), state="LISTEN"))
         return ports
+
+    async def add_script(self, name: str, content: str) -> None:
+        """Add a custom script to the sandbox."""
+        script_path = f"/root/commands/{name}"
+        escaped_content = content.replace('"', '\\"')
+        command = f'echo "{escaped_content}" > {script_path} && chmod +x {script_path}'
+        await self.sandbox.communicate(command)

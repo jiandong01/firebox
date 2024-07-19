@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional
 
 
-class SandboxConfig(BaseModel):
+class DockerSandboxConfig(BaseModel):
     sandbox_id: Optional[str] = Field(
         default=None, description="Unique identifier for the sandbox"
     )

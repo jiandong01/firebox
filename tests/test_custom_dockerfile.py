@@ -1,8 +1,8 @@
 import pytest
 import asyncio
 import os
-from firebox.docker_sandbox import Sandbox
-from firebox.models.sandbox import SandboxConfig
+from firebox.sandbox import Sandbox
+from firebox.models.sandbox import DockerSandboxConfig
 from firebox.config import config
 from firebox.logs import logger
 
@@ -27,7 +27,7 @@ async def test_custom_dockerfile_sandbox(custom_dockerfile, tmp_path):
     persistent_storage_path = tmp_path / "persistent_storage"
     persistent_storage_path.mkdir(exist_ok=True)
 
-    sandbox_config = SandboxConfig(
+    sandbox_config = DockerSandboxConfig(
         dockerfile=custom_dockerfile,
         dockerfile_context=os.path.dirname(custom_dockerfile),
         cpu=config.cpu,
