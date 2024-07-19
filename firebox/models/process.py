@@ -24,7 +24,7 @@ class ProcessEvent(BaseModel):
     data: Optional[str] = None  # For stdout/stderr events
 
     class ConfigDict:
-        alias_generator = snake_case_to_camel_case  # Assuming you want to use this
+        alias_generator = snake_case_to_camel_case
 
     def __str__(self):
         if self.event_type == ProcessEventType.START:

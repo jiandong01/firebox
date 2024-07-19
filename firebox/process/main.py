@@ -2,12 +2,8 @@ import asyncio
 import time
 from typing import Dict, Optional, Any, List, Callable, Union
 
-from ..exception import (
-    ProcessException,
-    TimeoutException,
-    CurrentWorkingDirectoryDoesntExistException,
-)
-from ..models import EnvVars, ProcessMessage, ProcessOutput
+from ..exception import ProcessException, TimeoutException
+from ..models.process import EnvVars, ProcessMessage, ProcessOutput, RunningProcess
 from ..constants import TIMEOUT
 from ..logs import logger
 
@@ -73,10 +69,31 @@ class Process:
     async def start(self):
         self._task = asyncio.create_task(self._run())
 
+    async def wait(self, timeout: Optional[float] = None) -> ProcessOutput:
+        try:
+            await asyncio.wait_for(self._finished, timeout=timeout)
+            return self._output
+        except asyncio.TimeoutError:
+            raise TimeoutException(f"Process did not finish within {timeout} seconds")
+
+    async def kill(self, timeout: Optional[float] = TIMEOUT) -> None:
+        if self._task:
+            self._task.cancel()
+            try:
+                await asyncio.wait_for(self._task, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Failed to cancel process {self._process_id} within timeout"
+                )
+            except asyncio.CancelledError:
+                pass
+
     async def _run(self):
         try:
-            env_vars_str = " ".join(f"{k}={v}" for k, v in self._env_vars.items())
-            full_cmd = f"cd {self._cwd} && {env_vars_str} {self._cmd}"
+            env_vars_str = " ".join(
+                f"export {k}='{v}';" for k, v in self._env_vars.items()
+            )
+            full_cmd = f"bash -c '{env_vars_str} cd {self._cwd} && {self._cmd}'"
             exit_code, output = await self._sandbox.communicate(full_cmd)
 
             lines = output.splitlines()
@@ -100,31 +117,20 @@ class Process:
                     )
                 )
         finally:
-            self._finished.set_result(True)
-
-    async def wait(self, timeout: Optional[float] = None) -> ProcessOutput:
-        try:
-            await asyncio.wait_for(self._finished, timeout=timeout)
-            return self._output
-        except asyncio.TimeoutError:
-            raise TimeoutException(f"Process did not finish within {timeout} seconds")
+            if not self._finished.done():
+                self._finished.set_result(True)
 
     async def send_stdin(self, data: str, timeout: Optional[float] = TIMEOUT) -> None:
-        raise NotImplementedError(
-            "send_stdin is not implemented for this Process class"
-        )
-
-    async def kill(self, timeout: Optional[float] = TIMEOUT) -> None:
-        if self._task:
-            self._task.cancel()
-            try:
-                await asyncio.wait_for(self._task, timeout=timeout)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"Failed to cancel process {self._process_id} within timeout"
-                )
-            except asyncio.CancelledError:
-                pass
+        try:
+            cmd = f"echo '{data}' | {self._cmd}"
+            exit_code, output = await self._sandbox.communicate(cmd, timeout=timeout)
+            timestamp = int(time.time() * 1e9)
+            message = ProcessMessage(line=output, timestamp=timestamp, error=False)
+            self._output._add_stdout(message)
+            if self._on_stdout:
+                self._on_stdout(message)
+        except Exception as e:
+            raise ProcessException(f"Failed to send stdin: {str(e)}") from e
 
 
 class ProcessManager:
@@ -200,3 +206,39 @@ class ProcessManager:
             process_id=process_id,
         )
         return await process.wait(timeout)
+
+    async def list_processes(
+        self, timeout: Optional[float] = TIMEOUT
+    ) -> List[RunningProcess]:
+        try:
+            cmd = (
+                "for pid in /proc/[0-9]*; do "
+                "    pid=${pid##*/}; "
+                "    cmd=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\\0' ' '); "
+                "    stat=$(cat /proc/$pid/stat 2>/dev/null); "
+                '    if [ ! -z "$cmd" ] && [ ! -z "$stat" ]; then '
+                "        echo $pid \"$cmd\" $(echo $stat | awk '{print $3}'); "
+                "    fi; "
+                "done"
+            )
+            exit_code, output = await self._sandbox.communicate(cmd, timeout=timeout)
+
+            if exit_code != 0:
+                raise ProcessException(f"Failed to list processes: {output}")
+
+            processes = []
+            for line in output.strip().split("\n"):
+                parts = line.split(None, 2)
+                if len(parts) < 3:
+                    continue
+                pid, cmd, status = parts
+                processes.append(
+                    RunningProcess(
+                        pid=int(pid),
+                        cmd=cmd.strip(),
+                        status=status,
+                    )
+                )
+            return processes
+        except Exception as e:
+            raise ProcessException(f"Failed to list processes: {str(e)}") from e
