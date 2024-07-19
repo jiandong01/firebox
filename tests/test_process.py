@@ -32,7 +32,7 @@ async def sandbox(sandbox_config):
     logger.info(f"Sandbox initialized with ID: {s.id}")
     yield s
     logger.info(f"Closing sandbox with ID: {s.id}")
-    await s.close()
+    await s.release()
 
 
 @pytest.mark.asyncio

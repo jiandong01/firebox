@@ -156,25 +156,21 @@ class DockerSandbox:
             logger.error(f"Command execution failed: {str(e)}")
             raise SandboxException(f"Command execution failed: {str(e)}") from e
 
-    async def close(self):
+    async def stop(self):
         if self.container:
-            logger.info(f"Stopping and removing container {self.id}")
-            try:
-                self.container.remove(v=True, force=True)
-                logger.info(f"Container {self.id} removed successfully")
-            except docker.errors.NotFound:
-                logger.warning(
-                    f"Container {self.id} not found, it may have been already removed"
-                )
-            except docker.errors.APIError as e:
-                logger.error(f"Failed to remove container {self.id}: {str(e)}")
-                raise SandboxException(
-                    f"Failed to remove container {self.id}: {str(e)}"
-                ) from e
-            finally:
-                self.container = None
-        else:
-            logger.warning(f"No container to remove for sandbox {self.id}")
+            self.container.stop()
+            logger.info(f"Container {self.id} stopped")
+
+    async def start(self):
+        if self.container:
+            self.container.start()
+            logger.info(f"Container {self.id} started")
+
+    async def remove(self):
+        if self.container:
+            self.container.remove(v=True, force=True)
+            self.container = None
+            logger.info(f"Container {self.id} removed")
 
     def get_hostname(self, port: Optional[int] = None) -> str:
         if not self.container:
@@ -215,3 +211,23 @@ class DockerSandbox:
                     ip, port = parts[3].rsplit(":", 1)
                     ports.append(OpenPort(ip=ip, port=int(port), state="LISTEN"))
         return ports
+
+    @classmethod
+    def get(cls, sandbox_id: str):
+        client = docker.from_env()
+        try:
+            container = client.containers.get(f"{sandbox_id}")
+            config = DockerSandboxConfig(
+                sandbox_id=sandbox_id,
+                image=container.image.tags[0] if container.image.tags else "unknown",
+                cwd=container.attrs["Config"]["WorkingDir"],
+                environment=container.attrs["Config"]["Env"],
+            )
+            sandbox = cls(config)
+            sandbox.container = container
+            return sandbox
+        except docker.errors.NotFound:
+            raise SandboxException(f"Sandbox with ID {sandbox_id} not found")
+
+    def is_running(self):
+        return self.container and self.container.status == "running"

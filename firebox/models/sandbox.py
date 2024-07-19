@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional
+from enum import Enum
 
 
 class DockerSandboxConfig(BaseModel):
@@ -35,9 +36,16 @@ class DockerSandboxConfig(BaseModel):
     )
 
 
-class SandboxStatus(BaseModel):
+class SandboxStatus(Enum):
+    CREATED = "created"
+    RUNNING = "running"
+    CLOSED = "closed"
+    RELEASED = "released"
+
+
+class SandboxInfo(BaseModel):
     sandbox_id: str = Field(..., description="Unique identifier of the sandbox")
-    status: str = Field(..., description="Current status of the sandbox")
+    status: SandboxStatus
     metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Metadata associated with the sandbox"
     )

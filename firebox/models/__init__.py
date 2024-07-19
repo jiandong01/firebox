@@ -10,7 +10,7 @@ from .process import (
     ProcessConfig,
     RunningProcess,
 )
-from .sandbox import DockerSandboxConfig, SandboxStatus
+from .sandbox import DockerSandboxConfig, SandboxStatus, SandboxInfo
 from .terminal import TerminalOutput
 
 __all__ = [
@@ -29,5 +29,6 @@ __all__ = [
     "RunningProcess",
     "DockerSandboxConfig",
     "SandboxStatus",
+    "SandboxInfo",
     "TerminalOutput",
 ]
