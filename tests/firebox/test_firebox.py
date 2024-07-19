@@ -70,7 +70,9 @@ def sandbox_config(tmp_path):
 
 @pytest.fixture(scope="function")
 async def sandbox(sandbox_config):
-    s = await Sandbox.create(template=sandbox_config)
+    s = Sandbox(template=sandbox_config)
+    while s.status != SandboxStatus.RUNNING:
+        await asyncio.sleep(0.1)
     yield s
     await s.close()
 
@@ -95,7 +97,9 @@ async def test_firebox_communicate(sandbox):
 @pytest.mark.asyncio
 async def test_firebox_reconnect(sandbox_config):
     logger.info("Testing sandbox reconnection")
-    original_sandbox = await Sandbox.create(template=sandbox_config)
+    original_sandbox = Sandbox(template=sandbox_config)
+    while original_sandbox.status != SandboxStatus.RUNNING:
+        await asyncio.sleep(0.1)
     sandbox_id = original_sandbox.id
     await original_sandbox.close()
 
@@ -194,7 +198,9 @@ async def test_firebox_list(sandbox):
 @pytest.mark.asyncio
 async def test_firebox_cleanup(docker_client, sandbox_config):
     logger.info("Testing sandbox cleanup")
-    sandbox = await Sandbox.create(template=sandbox_config)
+    sandbox = Sandbox(template=sandbox_config)
+    while sandbox.status != SandboxStatus.RUNNING:
+        await asyncio.sleep(0.1)
 
     assert sandbox._docker_sandbox.container is not None
     assert sandbox._docker_sandbox.is_running()

@@ -4,6 +4,7 @@ import os
 from firebox.sandbox import Sandbox
 from firebox.models.sandbox import DockerSandboxConfig
 from firebox.models.filesystem import FilesystemOperation, FilesystemEvent
+from firebox.models import SandboxStatus
 from firebox.config import config
 from firebox.logs import logger
 
@@ -24,7 +25,12 @@ def sandbox_config(tmp_path):
 
 @pytest.fixture
 async def filesystem(sandbox_config):
-    sandbox = await Sandbox.create(template=sandbox_config)
+    sandbox = Sandbox(template=sandbox_config)
+
+    # Wait for the sandbox to be fully initialized
+    while sandbox.status != SandboxStatus.RUNNING:
+        await asyncio.sleep(0.1)
+
     yield sandbox.filesystem
     await sandbox.close()
 

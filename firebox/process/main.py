@@ -92,10 +92,9 @@ class Process:
     async def _run(self):
         try:
             env_vars_str = " ".join(
-                f"{k}={shlex.quote(v)}" for k, v in self._env_vars.items()
+                f"export {k}={shlex.quote(v)};" for k, v in self._env_vars.items()
             )
-            escaped_cmd = shlex.quote(self._cmd)
-            full_cmd = f"bash -c {shlex.quote(f'set -e; {env_vars_str}; cd {self._cwd} && {self._cmd}')}"
+            full_cmd = f"bash -c {shlex.quote(f'{env_vars_str} cd {shlex.quote(self._cwd)} && {self._cmd}')}"
 
             logger.debug(f"Executing command: {full_cmd}")
             exit_code, output = await self._sandbox.communicate(full_cmd)

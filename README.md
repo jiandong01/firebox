@@ -11,6 +11,8 @@ Firebox is a powerful sandbox environment for running code securely. It provides
   - [Sandbox](#sandbox)
   - [Filesystem](#filesystem)
   - [Process](#process)
+  - [Terminal](#terminal)
+  - [Code Snippet](#code-snippet)
 - [Advanced Usage](#advanced-usage)
 - [Configuration](#configuration)
 - [Contributing](#contributing)
@@ -29,31 +31,38 @@ pip install firebox
 Here's a simple example to get you started with Firebox:
 
 ```python
+import asyncio
 from firebox import Sandbox
 
 async def main():
     # Create a new sandbox
-    sandbox = await Sandbox.create()
+    sandbox = Sandbox()
+
+    # Wait for the sandbox to be fully initialized
+    while sandbox.status != SandboxStatus.RUNNING:
+        await asyncio.sleep(0.1)
 
     # Execute a command in the sandbox
-    result, exit_code = await sandbox.communicate("echo 'Hello, Firebox!'")
-    print(f"Output: {result}, Exit Code: {exit_code}")
+    result = await sandbox.process.start_and_wait("echo 'Hello, Firebox!'")
+    print(f"Output: {result.stdout}, Exit Code: {result.exit_code}")
 
-    # Close the sandbox
-    await sandbox.close()
+    # Release the sandbox
+    await sandbox.release()
 
 asyncio.run(main())
 ```
 
 ## Features
 
-- Secure execution environment
+- Secure execution environment based on Docker
 - Persistent storage with automatic mounting
 - File system operations
 - Process management
+- Terminal emulation
 - Environment variable control
 - Customizable Docker images
 - Timeout controls
+- Port scanning and management
 
 ## API Reference
 
@@ -62,9 +71,10 @@ asyncio.run(main())
 #### Creating a Sandbox
 
 ```python
-from firebox import Sandbox, SandboxConfig
+from firebox import Sandbox
+from firebox.models import DockerSandboxConfig, SandboxStatus
 
-config = SandboxConfig(
+config = DockerSandboxConfig(
     image="kalilinux/kali-rolling",
     cpu=1,
     memory="2g",
@@ -73,14 +83,11 @@ config = SandboxConfig(
     cwd="/sandbox"
 )
 
-sandbox = Sandbox(config)
-await sandbox.init()
-```
+sandbox = Sandbox(template=config)
 
-#### Executing Commands
-
-```python
-result, exit_code = await sandbox.communicate("ls -l")
+# Wait for the sandbox to be fully initialized
+while sandbox.status != SandboxStatus.RUNNING:
+    await asyncio.sleep(0.1)
 ```
 
 #### Closing a Sandbox
@@ -129,32 +136,63 @@ result = await process.wait()
 await process.send_stdin("input data\n")
 ```
 
+### Terminal
+
+#### Starting a Terminal Session
+
+```python
+terminal = await sandbox.terminal.start(
+    on_data=lambda data: print(f"Received: {data}"),
+    cols=80,
+    rows=24
+)
+```
+
+#### Sending Data to Terminal
+
+```python
+await terminal.send_data("ls -l\n")
+```
+
+### Code Snippet
+
+#### Adding a Custom Script
+
+```python
+await sandbox.code_snippet.add_script("my_script.sh", "#!/bin/bash\necho 'Hello from custom script!'")
+```
+
+#### Listing Custom Scripts
+
+```python
+scripts = await sandbox.code_snippet.list_scripts()
+```
+
 ## Advanced Usage
 
 ### Custom Docker Images
 
-You can use custom Docker images by specifying them in the `SandboxConfig`:
+You can use custom Docker images by specifying them in the `DockerSandboxConfig`:
 
 ```python
-config = SandboxConfig(
+config = DockerSandboxConfig(
     dockerfile="/path/to/Dockerfile",
     dockerfile_context="/path/to/context",
     persistent_storage_path="./sandbox_data",
     cwd="/sandbox"
 )
-sandbox = Sandbox(config)
-await sandbox.init()
+sandbox = Sandbox(template=config)
 ```
 
 ### Watching for File Changes
 
 ```python
 def on_file_change(event):
-    print(f"File changed: {event['path']}")
+    print(f"File changed: {event.path}")
 
 watcher = sandbox.filesystem.watch_dir(".")
 watcher.add_event_listener(on_file_change)
-watcher.start()
+await watcher.start()
 ```
 
 ## Configuration
@@ -168,7 +206,11 @@ persistent_storage_path: "./sandbox_data"
 cpu: 1
 memory: "1g"
 timeout: 30
-docker_host: "tcp://localhost:2375"
+docker_host: "unix://var/run/docker.sock"
+debug: false
+log_level: "INFO"
+max_retries: 3
+retry_delay: 1.0
 ```
 
 ## Contributing

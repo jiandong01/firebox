@@ -2,7 +2,7 @@ import pytest
 import asyncio
 import os
 from firebox.sandbox import Sandbox
-from firebox.models import DockerSandboxConfig
+from firebox.models import DockerSandboxConfig, SandboxStatus
 from firebox.config import config
 from firebox.logs import logger
 
@@ -40,7 +40,11 @@ async def test_custom_dockerfile_sandbox(custom_dockerfile, tmp_path):
 
     sandbox = None
     try:
-        sandbox = await Sandbox.create(template=sandbox_config)
+        sandbox = Sandbox(template=sandbox_config)
+
+        # Wait for the sandbox to be fully initialized
+        while sandbox.status != SandboxStatus.RUNNING:
+            await asyncio.sleep(0.1)
 
         assert sandbox._docker_sandbox.container is not None
         assert sandbox._docker_sandbox.container.status == "running"
@@ -85,7 +89,11 @@ async def test_custom_dockerfile_sandbox_with_volume(custom_dockerfile, tmp_path
 
     sandbox = None
     try:
-        sandbox = await Sandbox.create(template=sandbox_config)
+        sandbox = Sandbox(template=sandbox_config)
+
+        # Wait for the sandbox to be fully initialized
+        while sandbox.status != SandboxStatus.RUNNING:
+            await asyncio.sleep(0.1)
 
         assert sandbox._docker_sandbox.container is not None
         assert sandbox._docker_sandbox.container.status == "running"

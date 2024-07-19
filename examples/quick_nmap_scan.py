@@ -20,7 +20,7 @@ async def main():
     )
 
     try:
-        sandbox = await Sandbox.create(template=config)
+        sandbox = await Sandbox(template=config)
         print("Sandbox created successfully")
 
         # Update package list

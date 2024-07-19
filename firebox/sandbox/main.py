@@ -103,7 +103,10 @@ class Sandbox:
         )
         self._status = SandboxStatus.CREATED
 
-    async def open(self, timeout: Optional[float] = TIMEOUT) -> None:
+        # Automatically open the sandbox
+        asyncio.create_task(self._open(timeout))
+
+    async def _open(self, timeout: Optional[float] = TIMEOUT) -> None:
         logger.info(
             f"Opening sandbox with template {self._docker_sandbox.config.image}"
         )
@@ -138,12 +141,6 @@ class Sandbox:
         if self.id in Sandbox._closed_sandboxes:
             del Sandbox._closed_sandboxes[self.id]
         logger.info(f"Sandbox {self.id} released")
-
-    @classmethod
-    async def create(cls, *args, **kwargs):
-        sandbox = cls(*args, **kwargs)
-        await sandbox.open()
-        return sandbox
 
     async def keep_alive(self, duration: int) -> None:
         if not 0 <= duration <= 3600:
