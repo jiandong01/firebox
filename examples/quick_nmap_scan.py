@@ -1,6 +1,8 @@
 import asyncio
 import os
-from firebox import Sandbox, SandboxConfig
+from firebox import Sandbox
+from firebox.models import DockerSandboxConfig
+from firebox.exception import SandboxException
 
 
 async def main():
@@ -8,7 +10,7 @@ async def main():
     persistent_storage_path = "./sandbox_data"
     os.makedirs(persistent_storage_path, exist_ok=True)
 
-    config = SandboxConfig(
+    config = DockerSandboxConfig(
         image="kalilinux/kali-rolling",
         cpu=1,
         memory="2g",
@@ -17,40 +19,33 @@ async def main():
         cwd="/sandbox",
     )
 
-    sandbox = Sandbox(config)
-    await sandbox.init()
-    print("Sandbox created successfully")
-
     try:
+        sandbox = await Sandbox.create(template=config)
+        print("Sandbox created successfully")
+
         # Update package list
         print("Updating package list...")
-        update_process = await sandbox.process.start("apt-get update")
-        update_process.on_stdout = lambda output: print(
-            f"Update output: {output.line.strip()}"
+        update_result = await sandbox.start_and_wait(
+            "apt-get update",
+            on_stdout=lambda msg: print(f"Update output: {msg.line.strip()}"),
         )
-        update_result = await update_process.wait()
-        print(f"Update completed with exit code: {update_result['exit_code']}")
+        print(f"Update completed with exit code: {update_result.exit_code}")
 
         # Install nmap
         print("Installing nmap...")
-        install_process = await sandbox.process.start("apt-get install -y nmap")
-        install_process.on_stdout = lambda output: print(
-            f"Install output: {output.line.strip()}"
+        install_result = await sandbox.start_and_wait(
+            "apt-get install -y nmap",
+            on_stdout=lambda msg: print(f"Install output: {msg.line.strip()}"),
         )
-        install_result = await install_process.wait()
-        print(
-            f"Nmap installation completed with exit code: {install_result['exit_code']}"
-        )
+        print(f"Nmap installation completed with exit code: {install_result.exit_code}")
 
         # Run nmap scan on localhost
         print("Running nmap scan...")
         scan_cmd = "nmap -sV -p- 127.0.0.1 -oN /sandbox/nmap_scan_results.txt"
-        scan_process = await sandbox.process.start(scan_cmd)
-        scan_process.on_stdout = lambda output: print(
-            f"Scan output: {output.line.strip()}"
+        scan_result = await sandbox.start_and_wait(
+            scan_cmd, on_stdout=lambda msg: print(f"Scan output: {msg.line.strip()}")
         )
-        scan_result = await scan_process.wait()
-        print(f"Nmap scan completed with exit code: {scan_result['exit_code']}")
+        print(f"Nmap scan completed with exit code: {scan_result.exit_code}")
 
         # Check if the scan results file exists
         file_exists = await sandbox.filesystem.exists("nmap_scan_results.txt")
@@ -76,10 +71,13 @@ async def main():
         except Exception as e:
             print(f"An error occurred: {str(e)}")
 
+    except SandboxException as e:
+        print(f"Sandbox error: {str(e)}")
     finally:
         # Close the sandbox
-        await sandbox.close()
-        print("Sandbox closed")
+        if "sandbox" in locals():
+            await sandbox.close()
+            print("Sandbox closed")
 
 
 if __name__ == "__main__":
